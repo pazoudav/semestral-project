@@ -1,0 +1,78 @@
+zone:
+  global:
+    width:  40.0
+    height: 10.0
+    floor:  -2.0
+  local: 
+    width:  11.0 
+    height: 11.0
+
+planning:
+  replanning_distance: 1.0
+  big_distance: 1000000.0
+  heading_weight: 3.0
+  skip_path_point_distance: 0.4
+
+tsp:
+  max_duration: 500000
+
+prm:
+  free_space_diameter: 1.2
+  overlap_coefficient: 0.8
+  node_max_age: 128
+  resample_factor: 0.5
+  init_matrix_size: 32
+  max_cost: 1000000.0
+
+frontiers:
+  min_size: 8
+  min_svd_eigen_value: 32
+  size_decrease_ratio: 0.95
+  viewpoint:
+    sample_attempts: 64
+    sample_radius: 3.0
+    sample_height: 2.0
+    max_distance: 4.0
+    max_angle: 0.75 # ~= pi/4
+    max_count: 8
+    min_count: 1
+    resample_probability: 0.1
+    min_coverage: 8
+
+viz:
+  scale:
+    points: 0.05
+    lines: 0.02
+
+timer_rates:
+  main: 10.0
+  PRM_update: 5.0
+  path: 10.0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  # planning_tree_resolution: 0.4 # [m] min side length of each voxel in the octomap, should be set the same as octomap_mapping 
+# distance_transform_distance: 20.0 # [m] from the UAV into all directions
+# safe_obstacle_distance: # [m]# [m] distance around occupied cells that is also deemed as occupied, should be atleast uav_radius / 2
+#   default: 0.75
+# distance_penalty: 1.0 # coefficient for traveled distance from start in A* cost function
+# greedy_penalty: 1.0 # coefficient for estimated distance to goal in A* cost function
+# max_waypoint_distance: -1.0 # [m] // or set negative for no padding
+
+# unknown_is_occupied: true # if false, planning through unknown space is enabled 
+# timeout_threshold: 3.0 # [s] time after which A* planning is aborted and returns path to the node with the so far lowest cost   
+# min_path_length: 0.5 # [m] paths shorter than this distnace are ignored to prevent very small possibly oscillatory movements
+# # used for visualizing the planner cells using BatchVisualizer

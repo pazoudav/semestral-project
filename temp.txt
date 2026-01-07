@@ -1,0 +1,124 @@
+ // if (!is_initialized_) {
+    //   return false;
+    // }
+
+    // const bool got_octomap = sh_octomap_.hasMsg() && (ros::Time::now() - sh_octomap_.lastMsgTime()).toSec() < 2.0;
+
+    // if (!got_octomap) {
+    //   ROS_INFO_THROTTLE(1.0,
+    //                     "[MrsExplorer]: waiting for data: octomap = %s",
+    //                     got_octomap ? "TRUE" : "FALSE");
+    //   return false;
+    // }
+
+    // // bv_mapper_->setParentFrame(mrs_lib::get_mutexed(mutex_octree_, octree_frame_));
+    // mrs_octomap_planner::AstarPlanner planner = mrs_octomap_planner::AstarPlanner(_safe_obstacle_distance_,
+    //                                                                               _safe_obstacle_distance_,
+    //                                                                               _distance_transform_distance_,
+    //                                                                               _planning_tree_resolution_,
+    //                                                                               _distance_penalty_,
+    //                                                                               _greedy_penalty_,
+    //                                                                               _timeout_threshold_,
+    //                                                                               _max_waypoint_distance_,
+    //                                                                               _min_altitude_,
+    //                                                                               _max_altitude_,
+    //                                                                               _unknown_is_occupied_,
+    //                                                                               bv_prm_);
+
+    // octomap::point3d plan_from, plan_to;
+    // plan_from.x() = req.start.x;
+    // plan_from.y() = req.start.y;
+    // plan_from.z() = req.start.z;
+
+    // plan_to.x() = req.end.x;
+    // plan_to.y() = req.end.y;
+    // plan_to.z() = req.end.z;
+
+    // OcTreeSharedPtr_t octree = mrs_lib::get_mutexed(mutex_octree_, octree_);
+
+    // auto path = planner.findPath(plan_from, plan_to, octree, _timeout_threshold_);
+
+    // // check path
+    // if (path.second) {
+    //   // path until the end
+    //   path.first.push_back(plan_to);
+    //   std::stringstream ss;
+    //   ss << "Found complete path of length = " << path.first.size();
+    //   ROS_INFO_STREAM("[MrsExplorer]: " << ss.str());
+    //   res.message = ss.str();
+    // }
+    // else {
+    //   // no path at all
+    //   if (path.first.size() < 2) {
+    //     ROS_WARN("[MrsExplorer]: No path found");
+    //     res.success = false;
+    //     res.message = "No path found";
+    //     res.path    = std::vector<geometry_msgs::Point>();
+    //     return true;
+    //   }
+      
+    //   // path not until the end but to a closer point
+    //   std::stringstream ss;
+    //   ss << "Incomplete path found of length = " << path.first.size();
+    //   ROS_INFO_STREAM("[MrsExplorer]: " << ss.str());
+    //   res.message = ss.str();
+
+    //   double front_x = path.first.front().x();
+    //   double front_y = path.first.front().y();
+    //   double front_z = path.first.front().z();
+
+    //   double back_x = path.first.back().x();
+    //   double back_y = path.first.back().y();
+    //   double back_z = path.first.back().z();
+
+    //   double dist_path_start_to_end =
+    //       sqrt(pow(front_x - back_x, 2) + pow(front_y - back_y, 2) + pow(front_z - back_z, 2));
+
+    //   if (dist_path_start_to_end < _min_path_length_) {
+    //     std::stringstream ss;
+    //     ss << "Path too short, length: " << dist_path_start_to_end;
+    //     ROS_WARN_STREAM("[MrsExplorer]: " << ss.str());
+    //     res.message = ss.str();
+    //   }
+    // }
+
+    // std::vector<geometry_msgs::Point> tf_path;
+    // auto                              from_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+    // auto                              to_frame   = req.header.frame_id;
+    // auto                              ret        = transformer_->getTransform(from_frame, to_frame, ros::Time::now());
+
+    // if (!ret) {
+    //   ROS_ERROR_STREAM_THROTTLE(1.0,
+    //                             "[MrsExplorer]: Failed to transform path from " << from_frame << " to "
+    //                                                                                          << to_frame);
+    //   return false;
+    // }
+
+    // auto tf = ret.value();
+
+    // for (auto& point : path.first) {
+
+    //   geometry_msgs::PointStamped tmp_pt;
+    //   tmp_pt.header.stamp    = ros::Time::now();
+    //   tmp_pt.header.frame_id = from_frame;
+    //   tmp_pt.point.x         = point.x();
+    //   tmp_pt.point.y         = point.y();
+    //   tmp_pt.point.z         = point.z();
+
+    //   auto transformed_point = transformer_->transform(tmp_pt, tf);
+
+    //   if (!transformed_point) {
+    //     ROS_ERROR_STREAM_THROTTLE(1.0,
+    //                               "[MrsExplorer]: Failed to transform path point from "
+    //                                   << from_frame << " to " << to_frame << " even when TF exists");
+    //     return false;
+    //   }
+
+    //   tf_path.push_back(transformed_point->point);
+    // }
+
+    // res.success         = true;
+    // res.header.stamp    = ros::Time::now();
+    // res.header.frame_id = to_frame;
+    // res.path            = tf_path;
+    // return true;
