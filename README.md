@@ -1,4 +1,4 @@
-# Octomap Mapping & Planning
+# Energy-aware UAV coverage path planning in scanning of outdoor structures
 
 
 # DEMO VIDEO
