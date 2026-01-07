@@ -1,12 +1,12 @@
 # Octomap Mapping & Planning
 
 
-* [mrs_uav_core](http://github.com/ctu-mrs/mrs_uav_core)
-* [mrs_octomap_mapping_planning](http://github.com/ctu-mrs/mrs_octomap_mapping_planning)
+# DEMO VIDEO
 
-## Packages
+https://youtu.be/lA2REzf3Iso
 
-## Example session
+
+## Run info  
 
 to build and run the package (-c flag cleans the catkin workspace before running)
 
@@ -25,7 +25,14 @@ main par of the implementation is in ros_packages/mrs_octomap_planner/
 - (octomap_planner.cpp/hpp kept only for reference and isn't used)
 
 
-most of the paramerts can be set in explorer.yaml
+most of the parameters can be set in explorer.yaml
+
+
+
+## Packages
+
+* [mrs_uav_core](http://github.com/ctu-mrs/mrs_uav_core)
+* [mrs_octomap_mapping_planning](http://github.com/ctu-mrs/mrs_octomap_mapping_planning)
 
 
 ## Main launch file
