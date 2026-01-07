@@ -8,11 +8,25 @@
 
 ## Example session
 
-to build and run the package fot the first time
-./run.sh -c
+to build and run the package (-c flag cleans the catkin workspace before running)
 
- subsequently 
-./run.sh
+run.sh [-c]
+
+
+## implementation
+
+main par of the implementation is in ros_packages/mrs_octomap_planner/
+- explorer.cpp
+- prm.cpp
+- frontier_manager.cpp
+- fis.cpp
+- utils.cpp
+- tsp_solver.cpp
+- (octomap_planner.cpp/hpp kept only for reference and isn't used)
+
+
+most of the paramerts can be set in explorer.yaml
+
 
 ## Main launch file
 
@@ -24,7 +38,7 @@ is prepared to launch
 
 * PointCloud filter ([mrs_pcl_tools](https://github.com/ctu-mrs/mrs_pcl_tools)),
 * Octomap Server,
-* Octomap Planner,
+* Octomap Planner <- implemented in mrs_octomap_planner
 * Octomap RVIZ Visualizer,
 * Nodelet manager.
 

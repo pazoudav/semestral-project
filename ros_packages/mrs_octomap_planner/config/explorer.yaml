@@ -1,6 +1,6 @@
 zone:
   global:
-    width:  40.0
+    width:  15.0
     height: 10.0
     floor:  -2.0
   local: 
