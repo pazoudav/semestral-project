@@ -163,7 +163,7 @@
 
   <!-- OctomapPlanner //{ -->
 
-  <include file="$(find mrs_octomap_planner)/launch/minimal_planner.launch">
+  <include file="$(find mrs_octomap_planner)/launch/explorer.launch">
 
     <arg name="standalone" value="true" />
     <!-- <arg name="nodelet_manager_name" value="$(arg nodelet_manager_name)" /> -->

@@ -23,7 +23,7 @@
 
     <node pkg="nodelet" type="nodelet" name="explorer" args="$(arg nodelet) mrs_octomap_planner/Explorer $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
-      <rosparam file="$(find mrs_octomap_planner)/config/minimal_planner.yaml" command="load" />
+      <rosparam file="$(find mrs_octomap_planner)/config/explorer.yaml" command="load" />
 
       <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" />
 
