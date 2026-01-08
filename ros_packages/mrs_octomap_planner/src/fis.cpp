@@ -9,7 +9,7 @@ namespace mrs_octomap_planner
 
 
 
-
+// frontier information structure from FUEL paper
 FIS::FIS(){}
 
 FIS::FIS(frontier_t cells, unsigned long id){

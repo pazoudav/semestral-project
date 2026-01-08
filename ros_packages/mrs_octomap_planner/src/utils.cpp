@@ -7,7 +7,7 @@ namespace mrs_octomap_planner
 auto SPHERE_POINTS = sampleSpherePoints(128);
 
 
-
+// used for plotting frontires
 color_t COLORS[] = {{.r=1.0, .g=0.0, .b=0.0},
                     {.r=0.0, .g=1.0, .b=0.0},
                     {.r=1.0, .g=0.0, .b=1.0},
@@ -34,7 +34,7 @@ color_t getColor(int i){
   return COLORS[i%15];
 }
 
-
+// get a key to adjecent node in octomap
 octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, std::vector<int> neighbour_offset){
   octomap::OcTreeKey new_key;
   new_key.k[0] = key.k[0] + neighbour_offset[0];
@@ -43,6 +43,7 @@ octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, std::vector<int> neig
   return new_key;
 }
 
+// get keys to adjecent (26 neighbors) nodes in octomap
 std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_node_key) {
 
   //Add current node to the closed set
@@ -55,6 +56,7 @@ std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_nod
   return res;
 }
 
+// not used now
 std::vector<octomap::point3d> sampleSpherePoints(int n)
 {
   std::vector<octomap::point3d> points(0);
@@ -77,8 +79,6 @@ std::vector<octomap::point3d> sampleSpherePoints(int n)
 }
 
 
-
-
 bool isSmallerEq(const octomath::Vector3& a, const octomath::Vector3& b)  
 {  
   return a.x() <= b.x() && a.y() <= b.y() && a.z() <= b.z();
@@ -89,6 +89,7 @@ bool isBiggerEq(const octomath::Vector3& a, const octomath::Vector3& b)
   return a.x() >= b.x() && a.y() >= b.y() && a.z() >= b.z();
 }
 
+// min x,y,z values in octomath::vecor
 octomap::point3d getMinBound(const frontier_t& fr){
   double mx=fr[0].x();
   double my=fr[0].y();
@@ -105,7 +106,7 @@ octomap::point3d getMinBound(const frontier_t& fr){
   return octomap::point3d(mx,my,mz);
 }
 
-
+// max x,y,z values in octomath::vecor
 octomap::point3d getMaxBound(const frontier_t& fr){
   double mx=fr[0].x();
   double my=fr[0].y();
@@ -143,7 +144,7 @@ float volume(AABB a)
   return  d.x()*d.y()*d.z();
 }
 
-
+// make AABB form centerpoint and side lenghts
 AABB aabbFromCenter(octomap::point3d c, double x, double y,double z){
   AABB b;
   b.min = octomap::point3d(c.x()-x/2, c.y()-y/2,c.z()-z/2);
@@ -151,6 +152,7 @@ AABB aabbFromCenter(octomap::point3d c, double x, double y,double z){
   return b;
 }
 
+// make AABB form centerpoint and side lenghts that is above a floor level (not used)
 AABB aabbSmartFromCenter(octomap::point3d c, double x, double y,double z, double floor){
   AABB res = aabbFromCenter(c,x,y,z);
 
@@ -170,6 +172,7 @@ octomap::point3d mean(frontier_t cells){
   return s;
 }
 
+// make smllest AABB that contains 2 AABB 
 AABB makeUnion(AABB a, AABB b)
 {
   frontier_t v_min = {a.min, b.min};
@@ -179,6 +182,7 @@ AABB makeUnion(AABB a, AABB b)
   return u;
 }
 
+// make biggest AABB that is contained by 2 AABB 
 AABB makeIntersection(AABB a, AABB b)
 {
   frontier_t v_min = {a.min, b.min};
@@ -194,7 +198,7 @@ bool isSubset(AABB a, AABB b)
   return isBiggerEq(a.min, b.min) && isSmallerEq(a.max, b.max);
 }
 
-
+// do a and b intersect
 bool intersect(AABB bbx0, AABB bbx1){
 
   for (auto corner : getConrners(bbx1)){
@@ -222,6 +226,7 @@ bool intersect(AABB bbx0, octomap::point3d p){
   return false;
 }
 
+// get random float between 0-1
 float getRand()
 {
   return static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
@@ -233,7 +238,7 @@ float getRand(float a, float b)
   return a + (b-a)*r;
 }
 
-
+// sample random in point from AABB
 octomap::point3d getSampleFromAABB(AABB a)
 {
   return octomap::point3d(getRand(a.min.x(), a.max.x()), 
@@ -241,7 +246,7 @@ octomap::point3d getSampleFromAABB(AABB a)
                           getRand(a.min.z(), a.max.z()));
 }
 
-
+// is a space in AABB free in teh octotree
 bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree)
 {
   octomap::point3d idx_bound = (zone.max - zone.min)*(1.0/tree->getResolution());
@@ -273,6 +278,7 @@ bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree)
   return true;
 }
 
+// is a sphere with diametr free in the octotree
 bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr<octomap::OcTree>& tree)
 {
   double radius = diameter/2.0;
@@ -288,7 +294,7 @@ bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr
       {
         float dx = xi*tree->getResolution();
         octomap::point3d dv(dx,dy,dz);
-        if (dv.norm() > 1.2*radius)
+        if (dv.norm() > 1.1*radius)
         {
           continue;
         }

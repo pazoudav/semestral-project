@@ -40,6 +40,7 @@ FrontierManager::FrontierManager( const std::shared_ptr<mrs_lib::BatchVisualizer
   frontier_id_ = 0;
 }
 
+// adds forntier, if frontier is too large it splits it in two with SVD and recursivly calls addFrontiers again
 void FrontierManager::addFrontier(const frontier_t& frontier)
 {
   // ROS_INFO("adding frontier");
@@ -47,6 +48,7 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
   int p = 3;
   int n = frontier.size();
 
+  // if a split cound create a frontier smaller then min, dont split and create the frontier
   if (n/2.0 <= min_frontier_size_){
     auto fis = std::make_unique<FIS>(frontier, frontier_id_++);
     added_frontiers_idx_.push_back(fis->id_);
@@ -54,6 +56,7 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
     return;
   }
 
+  // matrinx for SVD split
   Eigen::MatrixXd X(n,p);
   octomap::point3d center = mean(frontier);
   for (int idx=0; idx<frontier.size(); idx++)
@@ -66,6 +69,7 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
   Eigen::BDCSVD<Eigen::MatrixXd> svd(X, Eigen::ComputeFullV);
   double eig_val = svd.singularValues()(0);
 
+  // split large(long) frontier
   if (eig_val > min_svd_eigen_value_)
   {
     auto V = svd.matrixV();
@@ -93,6 +97,9 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
   }
 }
 
+// remodes frontiers based on isStillFrontier, increases a zone to search for frontiers in so that it contians the removed frontiers 
+// (new frontiers in a paces of removed frontiers can be found)
+// marks cells of not removed frontiers so that that space in not seareched again
 void FrontierManager::removeFrontiers()
 {
   // ROS_INFO("removing frontier");
@@ -108,14 +115,16 @@ void FrontierManager::removeFrontiers()
       if (!is_frontier)
       {
         removed_frontiers_.push_back(frontier->id_);
+        // increaese the search zone
         new_zone = makeUnion(new_zone, frontier->bbx_);
         fis_c_.erase(std::next(fis_c_.begin(),idx));
       }
     }
   }
-
+  // set the increaesed search zone
   setZone(new_zone);
 
+  // marks the cells of remaining frontiers in the zone so that they are not searched agian
   for (auto& frontier : fis_c_)
   {
     if (intersect(frontier->bbx_, zone_))
@@ -134,6 +143,9 @@ void FrontierManager::removeFrontiers()
 }
 
 
+// check if frontier is stil frontier
+// removes small frontiers
+// removes frontier that loose more then size_decrease_ratio_*frontier.size() cells
 bool FrontierManager::isStillFrontier(const frontier_t& frontier)
 {
   int fr_cell_cnt = 0;
@@ -156,6 +168,7 @@ bool FrontierManager::isStillFrontier(const frontier_t& frontier)
   return ratio >= size_decrease_ratio_;
 }
 
+// check if an unknown cell has at least one free neighbor in the closest 6 neighbothood (upd, down, loft, right, top, bottom)
 bool FrontierManager::isFrontierCell(octomap::point3d cell_pos)
 {
   octomap::OcTreeKey cell_key = tree_->coordToKey(cell_pos);
@@ -178,16 +191,19 @@ bool FrontierManager::isFrontierCell(octomap::point3d cell_pos)
   return false;
 }
 
+// helper func to check if cell was processed
 long FrontierManager::keyToClosedIdx(octomap::OcTreeKey start_key)
 {
   return (start_key[2]-min_key_[2])*dx_*dy_+(start_key[1]-min_key_[1])*dx_ + (start_key[0]-min_key_[0]);
 }
+
 
 bool FrontierManager::canBeProcessed(long closed_idx, const std::vector<bool>& closed)
 {
   return (closed_idx >= 0 && closed_idx < closed.size() && !closed[closed_idx]);
 }
 
+// sets zone for frontier search
 void FrontierManager::setZone(AABB zone)
 {
   zone_ = zone;
@@ -201,26 +217,27 @@ void FrontierManager::setZone(AABB zone)
   return;
 }
 
-
+// make viewpoint for a frontier
 void FrontierManager::makeViewpoints(FIS* fis)
 {
-  // ROS_INFO("making viewpoints");
   for (int i=0; i<viewpoint_sample_attempts_; i++)
   {
     octomap::point3d viewpoint_pos = fis->sampleViewpoint(viewpoint_sample_radius_, viewpoint_sample_height_);
     if (!intersect(zone_, viewpoint_pos)){
       continue;
     }
+    // viewpoint must be in free space
     auto node = tree_->search(tree_->coordToKey(viewpoint_pos), tree_->getTreeDepth());
     if (!node || tree_->isNodeOccupied(node)){
       continue;
     }
 
-    // AABB vp_zone = aabbFromCenter(viewpoint_pos, free_space_diameter_, free_space_diameter_, free_space_diameter_);
+    // viewpoint must have free space around
     if (isFreeSpace(viewpoint_pos, free_space_diameter_, tree_))
     {
       int coverage = 0;
 
+      // check how many FR cells are visible from viewpoint
       for (auto &cell : fis->cells_)
       {
         if (cell.distance(viewpoint_pos) > viewpoint_max_distance_ 
@@ -257,12 +274,14 @@ void FrontierManager::makeViewpoints(FIS* fis)
 
     if (fis->viewpoints_.size() >= max_viewpoints_per_fr_) break;
   }
-
+  // sort viewpoints by their coverage (how many FR cells they can see)
   std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
 
 }
 
-
+// removes old frontiers, serches for new ones and ads them, also creates viewpoints
+// classical BFS search, checks if cell was alredy explored or is a part of another forntier
+// updates only frontiers in zone that is visible by lidar and that contiants removed fromtiers
 void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, octomap::OcTreeKey start_key)
 {
     // ROS_INFO("processing new map");
@@ -276,14 +295,9 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     qu.push(start_key);
 
     std::vector<frontier_t> all_frontiers(0);
-    
-    // ROS_WARN("[MRsExplorer] looking for frontiers");
-    int idx = 0;
 
     while(qu.size() > 0)
     {
-      idx++;
-      // ROS_ERROR_THROTTLE(1.0,"[MRsExplorer] lookin for frontiers: %ith iteration, queue size: %i", idx, qu.size());
 
       octomap::OcTreeKey current_key = qu.front();
       qu.pop();
@@ -308,6 +322,7 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
   
         octomap::OcTreeNode* n_node = tree_->search(n_key, tree_->getTreeDepth());
         
+        // if cell is unknown and neighbors free cell, do second BFS to extract a frontier
         if (!n_node)
         {          
             // found frontier cell;
@@ -375,10 +390,8 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
         
       }
     }
-    // ROS_INFO("lookap finished");
-    // ROS_ERROR("[MRsExplorer] FRONTIER LOOKUP ENDED at iteration %i,", idx);
-    // ROS_WARN("[MRsExplorer] found %i frontiers in %i iterations", all_frontiers.size(), idx);
-    int cidx = 0;
+
+    
     int tmp = fis_c_.size();
     added_frontiers_idx_ = std::vector<int>(0);
     for (auto& frontier : all_frontiers)
@@ -387,14 +400,17 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     }
     viewable_frontier_cnt_ = fis_c_.size();
 
+    int cidx = 0;
     for (auto& fis : fis_c_)
     {
       if (fis->viewpoints_.size() < max_viewpoints_per_fr_)
       {
+        // if forntier doesnt have enough viewpoint try to search for them
         if (fis->viewpoints_.size() < min_viewpoints_per_fr_)
         {
           makeViewpoints(fis.get());
         }
+        // if forntier doesnt have all viewpoint try to search for them with some probability
         else if (getRand()<resample_probability_)
         {
           makeViewpoints(fis.get());
@@ -403,11 +419,9 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
       }
       viewable_frontier_cnt_ -= fis->viewpoints_.size() == 0 ? 1 : 0;
       
+      // draw frontiers in different colors
       color_t color = getColor(cidx++);
       bv_frontiers_->addPoint(Eigen::Vector3d(fis->center_.x(),fis->center_.y(),fis->center_.z()), color.r,color.g,color.b, 1.0);
-      
-      // for (auto v : fis->viewpoints_)
-      // {
       if (fis->viewpoints_.size() > 0)
       {
         viewpoint_t v = fis->viewpoints_[0];
@@ -419,14 +433,8 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
           Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
           mrs_lib::geometry::Cuboid c(center, size, orientation);
           bv_frontiers_->addCuboid( c, 1.0, 0.0, 1.0, 1.0, true);   
-        // bv_frontiers_->addPoint(Eigen::Vector3d(v.position.x(),v.position.y(),v.position.z()), color.r,color.g,color.b, 1.0);
-        // bv_frontiers_->addRay(mrs_lib::geometry::Ray( Eigen::Vector3d(fis->center_.x(),fis->center_.y(),fis->center_.z()),
-        //                                             Eigen::Vector3d(v.x(),v.y(),v.z())),
-        //                                             color.r,color.g,color.b, 1.0);
         }
       }
-      
-      // }
       
       for (auto &cell : fis->cells_)
       {
@@ -439,9 +447,6 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
       }
     }
     
-
-    // ROS_INFO("[MRsExplorer] removed %i frontiers, added %i frontiers",removed_frontiers_.size(), fis_c_.size()-tmp);
-    // ROS_INFO("[MRsExplorer] %i frontiers have zero viewpoints", viewable_frontier_cnt_);
     ROS_INFO("[MRsExplorer]: final frontier count: %i/%i/%i/%i (total/rem/add/0v)", fis_c_.size(), removed_frontiers_.size(), fis_c_.size()-tmp, viewable_frontier_cnt_);
 }
 

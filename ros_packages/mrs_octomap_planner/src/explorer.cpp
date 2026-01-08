@@ -337,6 +337,7 @@ namespace mrs_octomap_planner
   }
 
 
+  // updates the PRM map
   void Explorer::timerPRMupdate([[maybe_unused]] const ros::TimerEvent& evt) 
   {
     if (!is_initialized_) 
@@ -367,6 +368,7 @@ namespace mrs_octomap_planner
     if (map_update_.exchange(false))
     {
       std::scoped_lock lock(mutex_frontiers_, mutex_PRM_);
+      // adding new viewpoints to the map, no need to check in they are in free space, gaurenteed in viewpoint creation
       for (auto &fis : frontier_manager_->fis_c_)
       {
         if (fis->viewpoints_.size() > 0 && std::find(frontier_manager_->added_frontiers_idx_.begin(), frontier_manager_->added_frontiers_idx_.end(), fis->id_) != frontier_manager_->added_frontiers_idx_.end())
@@ -374,6 +376,7 @@ namespace mrs_octomap_planner
           prm_manager_->addNode(fis->viewpoints_[0].position);
         }
       }
+      // add and remove nodes only from regeon in lidar vilibility
       prm_manager_->updateZone(tree, local_zone, true);
     }
     else
@@ -405,10 +408,11 @@ namespace mrs_octomap_planner
     }
 
     ros::Time t0 = ros::Time::now();
+
+    // dont generate trajectory if path generation unsuccesful of no new path needed
     bool new_path = makePath();
     if (!new_path)
     {
-      // ROS_INFO_THROTTLE(1.0, "no new path");
       return;
     }
 
@@ -435,7 +439,7 @@ namespace mrs_octomap_planner
     bv_path_->clearBuffers();
   }
 
-
+  // processes new global map and extracts new frontiers
   void Explorer::callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -503,7 +507,7 @@ namespace mrs_octomap_planner
       ROS_WARN("[MRsExplorer] start not present in tree or occupied");
       return false;
     }
-
+    // extract frontiers only from local area, frontiers outside cannot change
     AABB local_zone = aabbFromCenter(start_coord, _local_zone_width_, _local_zone_width_, _local_zone_height_);
     local_zone = makeIntersection(local_zone, flight_zone_);
     mrs_lib::set_mutexed(mutex_local_zone_, local_zone, local_zone_);
@@ -531,10 +535,11 @@ bool Explorer::makePath()
     ROS_WARN_THROTTLE(1.0,"[MRsExplorer] has no reference");
     return false;
   }
-
+  // get cuurrent position
   auto pos = res.value().reference.position;
   octomap::point3d start_coord(pos.x, pos.y, pos.z);
   
+  // extract tracker predition
   octomath::Vector3 velocity(0.0,0.0,0.0);
   const bool got_control_manager_diag = sh_control_manager_diag_.hasMsg() && (ros::Time::now() - sh_control_manager_diag_.lastMsgTime()).toSec() < 2.0;
   const bool got_tracker_cmd   = sh_tracker_cmd_.hasMsg() && (ros::Time::now() - sh_tracker_cmd_.lastMsgTime()).toSec() < 2.0;
@@ -561,8 +566,8 @@ bool Explorer::makePath()
     return false;
   }
   
-  current_viewpoint_ = start_coord;
 
+  // check if current path from predition is in collision
   bool isInFreeSpace = false;
   std::shared_ptr<OcTree_t> tree;
   {
@@ -579,17 +584,20 @@ bool Explorer::makePath()
     }
   }
 
+  // if is in collision recalculate path, otherwise check if drone is near end of the path and replan, othervise do nothing 
   geometry_msgs::Point p = prediction.position[prediction.position.size()-1];
   if (isInFreeSpace && start_coord.distance(octomap::point3d(p.x,p.y,p.z)) > _replanning_distance_)
   {
     // ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, too far from goal %f", start_coord.distance(octomap::point3d(p.x,p.y,p.z)));
     return false;
   }
-
+  // start at current position
+  current_viewpoint_ = start_coord;
   int n = 0;
   std::vector<viewpoint_t> viable_viewpoints(0);
   viable_viewpoints.push_back(viewpoint_t{.position=current_viewpoint_, .coverage=10000});
 
+  // ectract viewpoints from frontiers
   {
     std::scoped_lock lock(mutex_frontiers_);
 
@@ -610,6 +618,7 @@ bool Explorer::makePath()
     return false;
   }
   
+  // calculate distance matrix for global path calculation
   Eigen::MatrixXd dist_matrix(n+1,n+1);
   for (int i=1; i<n+1; i++ )
   {
@@ -626,7 +635,7 @@ bool Explorer::makePath()
   dist_matrix(0,0) = 10*_big_distance_;
   
   std::vector<int> glob_path = tsp_solver_.solve(dist_matrix, false);
-
+  // process found global path to begin at node 0 (current position)
   auto zero_itr = std::find(glob_path.begin(), glob_path.end(), 0);
   std::rotate(glob_path.begin(), glob_path.begin() + std::distance(glob_path.begin(), zero_itr), glob_path.end());
 
@@ -635,6 +644,7 @@ bool Explorer::makePath()
     ROS_WARN("[MrsExplorer]: TSP tour not found");
     return false;
   }
+
   for (int i=0; i<glob_path.size()-1; i++)
   {
     auto v0 = viable_viewpoints[glob_path[i]].position;
@@ -644,6 +654,7 @@ bool Explorer::makePath()
                                             0.0, 1.0, 0.0, 1.0);  
   }
 
+  // find a path to first reachable viewpoint on global path
   std::vector<octomap::point3d> path(0);
   int i = 1;
   while(path.size() == 0 && i < glob_path.size())
@@ -654,6 +665,7 @@ bool Explorer::makePath()
     }
   }
   
+  // add only path to fisrt viewpoint to make into trajectory later
   if (path.size() > 0)
   {
     {
@@ -664,6 +676,7 @@ bool Explorer::makePath()
     path_ = std::vector<octomap::point3d>(0);
     for (int i=1; i<path.size(); i++)
     {
+      // dont insert path points that are too close to each other for better trajetory following 
       auto point = path[i];
       if (path_.size() > 0 && path_.back().distance(point) < _skip_path_point_distance_){
         continue;
@@ -692,7 +705,7 @@ bool Explorer::makePath()
       
   
 
-
+// make trajectory from found path
 bool  Explorer::makeTrajectory()
 {
   mrs_msgs::GetPathSrv srv_get_path;

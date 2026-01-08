@@ -28,6 +28,25 @@ main par of the implementation is in ros_packages/mrs_octomap_planner/
 most of the parameters can be set in explorer.yaml
 
 
+## how in works / what does it do
+
+- visualize data in rviz explorer tab
+- transparent cubes are frontiers (color coded)
+- pink cubes are viewpoints
+- green lines are a global path thru all viewpoint
+- path and trajectory fro the drone
+
+.
+- when new global map is recieved, extract frontiers in observed area
+
+.
+- periodicaly makes and updates PRM for navigation, 
+- PRM navigaiton nodes are dynamicaly creaded and destroid based on their age or if a new scan find that they are no longer in a free space,
+
+.
+- periodicaly creates a shortest path (TSP) across all viewpoints,
+- makes path to closest viewpoint,
+- sets trasjectory, checks if trajectory is viable during flight
 
 ## Packages
 

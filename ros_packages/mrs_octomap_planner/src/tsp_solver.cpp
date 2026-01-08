@@ -98,6 +98,7 @@ std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse
   int cnt = 0;
   while (ros::Time::now() - start_ < duration_)
   { 
+    // fist use greedy solution starting at node 0, then try solutions staring at other nodes
     std::vector<int> solution;
     if (reuse_solution && cnt  == 0)
     {
@@ -110,6 +111,7 @@ std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse
 
     double cost = computeCost(cost_matrix, solution);
 
+    // try to inmprove cost by randomly swaping two nodes
     for (int i=0; i<size*5000; i++)
     {
       int idx0 = rand() % size;

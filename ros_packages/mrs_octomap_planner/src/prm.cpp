@@ -32,16 +32,18 @@ PRM::~PRM()
 {
 }
 
+// update all nodes in a AABB zone
 void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bool map_update)
 {
   tree_ = tree;
-  float sample_cnt = resample_factor_*volume(zone);
+  float sample_cnt = resample_factor_*volume(zone); // sample based on volume of space that is  theoreticly visible by lidar
   int invalids = 0;
 
   for (auto &node : nodes_){
 
-    // node->age++;
+    // update only nodes insed the zone
     if (intersect(zone, node->position)){
+      // remove nodes older then N (nodes with fewer neighbors liove longer to preserve connections to remote areas) and nodes no longer in free space
       if (node->age++ > node_max_age_/(node->neighbors.size()+1) \
             || (map_update && !isFreeSpace(node->position, free_space_diameter_, tree)))
       {
@@ -50,6 +52,7 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bo
       }
       else 
       {
+        // if node not remove descrease sample count
         sample_cnt-=1.0;
       }
     }
@@ -66,10 +69,10 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bo
     }
     i++;
   }
+
   for (auto &node : nodes_){
     bv_prm_->addPoint(Eigen::Vector3d(node->position.x(),node->position.y(),node->position.z()));
     for (auto &neighbor_p : node->neighbors){
-      
       if (auto neighbor = neighbor_p.lock())
         bv_prm_->addRay(mrs_lib::geometry::Ray( Eigen::Vector3d(node->position.x(), node->position.y(), node->position.z()),
                                                     Eigen::Vector3d(neighbor->position.x(), neighbor->position.y(), neighbor->position.z())),
@@ -80,12 +83,11 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bo
 }
 
 
-
+// removew nodes marked as invalid, swaps nodes to the end of the vector and deletes the tail of invalid nodes
 void PRM::removeInvalidNodes()
 {
   node_cnt_ = nodes_.size();
   int back_idx = node_cnt_-1;
-  // std::vector<bool> visited_neighbors(node_cnt_, false);
   for (unsigned long i=0;i<node_cnt_; i++){
     auto node = nodes_[i];
     auto ne = std::remove_if(node->neighbors.begin(), node->neighbors.end(), 
@@ -100,8 +102,6 @@ void PRM::removeInvalidNodes()
       }
       std::swap(nodes_[i], nodes_[back_idx]);
       nodes_[i]->idx = i;
-      // cost_matrix_.col(i).swap(cost_matrix_.col(back_idx));
-      // cost_matrix_.row(i).swap(cost_matrix_.row(back_idx));
       back_idx--;
       node_cnt_--;
     }
@@ -127,11 +127,13 @@ void PRM::addNode(octomap::point3d position)
   {
     auto neighbor = nodes_[i];
     double dist = node->position.distance(neighbor->position);
+    // if node is realy close dont check fron free space between them
     if (dist <= free_space_diameter_*neighbor_overlap_)
     {
       node->neighbors.push_back(neighbor);
       neighbor->neighbors.push_back(node);
     }
+    // if ndoe is a bit further away, check if there is free space between them
     else if (dist <= 2*free_space_diameter_*neighbor_overlap_)
     {
       if (isFreeSpace(node->position + (neighbor->position - node->position)*(0.5/dist), free_space_diameter_, tree_))
@@ -162,7 +164,7 @@ std::vector<node_t> PRM::findCloseNode(octomap::point3d point, double r)
   return close_points;
 }
 
-
+// A* algoritm to find a shorest path between nodes, used euclidin distance heuristic
 path_t PRM::findNodePath(node_t start, node_t goal)
 {
   
@@ -228,7 +230,7 @@ path_t PRM::findNodePath(node_t start, node_t goal)
   return path_t{.nodes=path, .length=0};
 }
 
-
+// fin path between two points in space, finds closest nodes to the points and finds path on the PRM with A*
 std::vector<octomap::point3d> PRM::findPath(octomap::point3d start, octomap::point3d goal, octomath::Vector3 velocity)
 {
   std::vector<octomap::point3d> path(0);
@@ -284,7 +286,7 @@ std::vector<octomap::point3d> PRM::findPath(octomap::point3d start, octomap::poi
 }
 
 
-
+// simplyfies path only if two nodes can see each other, not if a drine can fly there
 std::vector<octomap::point3d> PRM::simplifyRaycastPath(std::vector<octomap::point3d> path)
 {
   std::vector<octomap::point3d> simplified_path(0);
@@ -326,6 +328,7 @@ std::vector<octomap::point3d> PRM::simplifyRaycastPath(std::vector<octomap::poin
   return simplified_path;
 }
 
+// simplyfies path only if drone can fly between the nodes
 std::vector<octomap::point3d> PRM::simplifyFreeSpacePath(std::vector<octomap::point3d> path)
 {
   std::vector<octomap::point3d> simplified_path(0);
