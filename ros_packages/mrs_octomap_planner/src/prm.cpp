@@ -14,7 +14,10 @@ PRM::PRM( std::shared_ptr<mrs_lib::BatchVisualizer> bv_planner,
           double                                    free_space_diameter, 
           double                                    overlap_coefficient, 
           double                                    resample_factor,
-          int                                       node_max_age)
+          int                                       node_max_age,
+          int                                       max_neighbors, 
+          double                                    min_neighbor_distance,
+          double                                    max_neighbor_distance)
 {
   bv_prm_ = bv_planner;
   cost_matrix_ = Eigen::MatrixXd(32,32);
@@ -26,6 +29,10 @@ PRM::PRM( std::shared_ptr<mrs_lib::BatchVisualizer> bv_planner,
   node_max_age_ = node_max_age;
   neighbor_overlap_ = overlap_coefficient;
   free_space_diameter_ = free_space_diameter;
+  max_neighbors_ = max_neighbors;
+  min_neighbor_distance_ = min_neighbor_distance;
+  max_neighbor_distance_ = max_neighbor_distance;
+
 }
 
 PRM::~PRM()
@@ -117,38 +124,63 @@ void PRM::addNode(octomap::point3d position)
   
   std::shared_ptr<node_t> node(new node_t);
   node->position = position;
-  node->neighbors=std::vector<std::weak_ptr<node_t>>(0),
-  node->idx = nodes_.size(),
-
+  node->neighbors=std::vector<std::weak_ptr<node_t>>(0);
+  node->idx = nodes_.size();
   nodes_.push_back(node);
+  // std::vector<dist>
   // node = nodes_.back();
 
-  for (int i=0; i<nodes_.size()-1; i++)
-  {
-    auto neighbor = nodes_[i];
-    double dist = node->position.distance(neighbor->position);
-    // if node is realy close dont check fron free space between them
-    if (dist <= free_space_diameter_*neighbor_overlap_)
-    {
-      node->neighbors.push_back(neighbor);
-      neighbor->neighbors.push_back(node);
-    }
-    // if ndoe is a bit further away, check if there is free space between them
-    else if (dist <= 2*free_space_diameter_*neighbor_overlap_)
-    {
-      if (isFreeSpace(node->position + (neighbor->position - node->position)*(0.5/dist), free_space_diameter_, tree_))
-      {
-        node->neighbors.push_back(neighbor);
-        neighbor->neighbors.push_back(node);
-      }
+  // for (int i=0; i<nodes_.size()-1; i++)
+  // {
+  //   auto neighbor = nodes_[i];
+  //   double dist = node->position.distance(neighbor->position);
+
+  //   // if node is realy close dont check fron free space between them
+  //   if (dist <= free_space_diameter_*neighbor_overlap_)
+  //   {
+  //     node->neighbors.push_back(neighbor);
+  //     neighbor->neighbors.push_back(node);
+  //   }
+  //   // if ndoe is a bit further away, check if there is free space between them
+  //   else if (dist <= 2*free_space_diameter_*neighbor_overlap_)
+  //   {
+  //     if (isFreeSpace(node->position + (neighbor->position - node->position)*(0.5/dist), free_space_diameter_, tree_))
+  //     {
+  //       node->neighbors.push_back(neighbor);
+  //       neighbor->neighbors.push_back(node);
+  //     }
       
+  //   }
+  // }
+
+  auto close_nodes = findCloseNodes(position, max_neighbor_distance_);
+
+  for (auto &neighbor : close_nodes)
+  {
+    int nidx = neighbor.idx;
+    double dist = node->position.distance(nodes_[nidx]->position);
+    
+    if (dist < min_neighbor_distance_)
+    {
+      continue;
+    }
+    else if (isFreeSpace(node->position + (nodes_[nidx]->position - node->position)*(0.25/dist), free_space_diameter_, tree_))
+    {
+      node->neighbors.push_back(nodes_[nidx]);
+      nodes_[nidx]->neighbors.push_back(node);
+    }
+    if (node->neighbors.size() >= max_neighbors_){
+      break;
     }
   }
+    
+  
 
 } 
 
 
-std::vector<node_t> PRM::findCloseNode(octomap::point3d point, double r)
+// finds nodes ion radius r and sorts them by distance
+std::vector<node_t> PRM::findCloseNodes(octomap::point3d point, double r)
 {
   std::vector<node_t> close_points(0);
   for (auto &node : nodes_)
@@ -245,8 +277,8 @@ std::vector<octomap::point3d> PRM::findPath(octomap::point3d start, octomap::poi
   //   return path;
   // }
 
-  auto start_candidates = findCloseNode(start, free_space_diameter_);
-  auto goal_candidates  = findCloseNode(goal,  free_space_diameter_);
+  auto start_candidates = findCloseNodes(start, free_space_diameter_);
+  auto goal_candidates  = findCloseNodes(goal,  free_space_diameter_);
 
   if (start_candidates.size() == 0)
   {

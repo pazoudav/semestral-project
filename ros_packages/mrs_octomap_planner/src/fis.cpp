@@ -21,7 +21,7 @@ FIS::FIS(frontier_t cells, unsigned long id){
   bbx_ = {.min=min, .max=max};
   sample_cnt_ = 20;
   viewpoints_ = std::vector<viewpoint_t>(0);
-  visible_cells_ = frontier_t(0);
+  // visible_cells_ = frontier_t(0);
 }
 
 octomap::point3d FIS::sampleViewpoint(double r, double h)

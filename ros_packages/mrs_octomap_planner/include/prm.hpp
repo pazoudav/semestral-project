@@ -55,6 +55,9 @@ private:
   float node_max_age_;
   float neighbor_overlap_;
   double free_space_diameter_;
+  int max_neighbors_;
+  double min_neighbor_distance_;
+  double max_neighbor_distance_;
   Eigen::MatrixXd cost_matrix_;
   std::shared_ptr<mrs_lib::BatchVisualizer> bv_prm_;
   std::shared_ptr<octomap::OcTree> tree_;
@@ -63,7 +66,7 @@ private:
   // void removeNode(node_t* node);
   void removeInvalidNodes();
   // void addNode(octomap::point3d position);
-  std::vector<node_t> findCloseNode(octomap::point3d point, double r);
+  std::vector<node_t> findCloseNodes(octomap::point3d point, double r);
   path_t findNodePath(node_t start, node_t goal);
   
 
@@ -72,7 +75,10 @@ public:
       double                                    free_space_diameter, 
       double                                    overlap_coefficient, 
       double                                    resample_factor,
-      int                                       node_max_age);
+      int                                       node_max_age,
+      int                                       max_neighbors, 
+      double                                    min_neighbor_distance,
+      double                                    max_neighbor_distance);
   PRM();
   ~PRM();
   

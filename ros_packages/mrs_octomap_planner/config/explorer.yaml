@@ -1,6 +1,6 @@
 zone:
   global:
-    width:  15.0
+    width:  30.0
     height: 10.0
     floor:  -2.0
   local: 
@@ -12,6 +12,7 @@ planning:
   big_distance: 1000000.0
   heading_weight: 3.0
   skip_path_point_distance: 0.4
+  flight_free_distance: 0.6
 
 tsp:
   max_duration: 500000
@@ -19,7 +20,10 @@ tsp:
 prm:
   free_space_diameter: 1.2
   overlap_coefficient: 0.8
-  node_max_age: 128
+  node_max_age: 256
+  max_neighbors: 8
+  min_neighbor_distance: 0.4
+  max_neighbor_distance: 2.0
   resample_factor: 0.5
   init_matrix_size: 32
   max_cost: 1000000.0

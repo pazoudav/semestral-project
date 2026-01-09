@@ -37,7 +37,7 @@ FrontierManager::FrontierManager( const std::shared_ptr<mrs_lib::BatchVisualizer
   min_coverage_ = min_coverage;
   
   fis_c_ = std::vector<std::unique_ptr<FIS>>(0);
-  frontier_id_ = 0;
+  frontier_id_ = 1;
 }
 
 // adds forntier, if frontier is too large it splits it in two with SVD and recursivly calls addFrontiers again
@@ -51,8 +51,8 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
   // if a split cound create a frontier smaller then min, dont split and create the frontier
   if (n/2.0 <= min_frontier_size_){
     auto fis = std::make_unique<FIS>(frontier, frontier_id_++);
-    added_frontiers_idx_.push_back(fis->id_);
     fis_c_.push_back(std::move(fis));
+    // added_frontiers_.push_back(fis_c_.back().get());
     return;
   }
 
@@ -91,8 +91,8 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
   else
   {
     auto fis = std::make_unique<FIS>(frontier, frontier_id_++);
-    added_frontiers_idx_.push_back(fis->id_);
     fis_c_.push_back(std::move(fis));
+    // added_frontiers_.push_back(fis_c_.back().get());
     return;
   }
 }
@@ -103,7 +103,7 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
 void FrontierManager::removeFrontiers()
 {
   // ROS_INFO("removing frontier");
-  removed_frontiers_ = std::vector<int>(0);
+  removed_frontiers_ = std::vector<octomap::point3d>(0);
   AABB new_zone = zone_;
 
   for (int idx=fis_c_.size()-1; idx>=0; idx--)
@@ -114,7 +114,9 @@ void FrontierManager::removeFrontiers()
       bool is_frontier = isStillFrontier(frontier->cells_);
       if (!is_frontier)
       {
-        removed_frontiers_.push_back(frontier->id_);
+        if (frontier->viewpoints_.size() > 0){
+          removed_frontiers_.push_back(frontier->viewpoints_[0].position);
+        }
         // increaese the search zone
         new_zone = makeUnion(new_zone, frontier->bbx_);
         fis_c_.erase(std::next(fis_c_.begin(),idx));
@@ -259,7 +261,7 @@ void FrontierManager::makeViewpoints(FIS* fis)
         }
         if (isVisible)
         {
-          fis->visible_cells_.push_back(cell);
+          // fis->visible_cells_.push_back(cell);
           coverage += 1;
         }
       }
@@ -393,46 +395,54 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
 
     
     int tmp = fis_c_.size();
-    added_frontiers_idx_ = std::vector<int>(0);
+    added_frontiers_ = std::vector<octomap::point3d>(0);
     for (auto& frontier : all_frontiers)
     { 
       addFrontier(frontier);
     }
-    viewable_frontier_cnt_ = fis_c_.size();
+    viewable_frontier_cnt_ = 0;
 
     int cidx = 0;
     for (auto& fis : fis_c_)
     {
-      if (fis->viewpoints_.size() < max_viewpoints_per_fr_)
-      {
-        // if forntier doesnt have enough viewpoint try to search for them
-        if (fis->viewpoints_.size() < min_viewpoints_per_fr_)
-        {
-          makeViewpoints(fis.get());
-        }
-        // if forntier doesnt have all viewpoint try to search for them with some probability
-        else if (getRand()<resample_probability_)
-        {
-          makeViewpoints(fis.get());
-        }
+      int viewpoint_cnt = fis->viewpoints_.size();
+      // if (viewpoint_cnt < max_viewpoints_per_fr_)
+      // {
+      //   // if forntier doesnt have enough viewpoint try to search for them
+      //   if (viewpoint_cnt < min_viewpoints_per_fr_)
+      //   {
+      //     makeViewpoints(fis.get());
+      //   }
+      //   // if forntier doesnt have all viewpoint try to search for them with some probability
+      //   else if (getRand()<resample_probability_)
+      //   {
+      //     makeViewpoints(fis.get());
+      //   }
           
+      // }
+      if (viewpoint_cnt == 0)
+        {
+          makeViewpoints(fis.get());
+        }
+      if (viewpoint_cnt == 0 && fis->viewpoints_.size() > 0){
+        added_frontiers_.push_back(fis->viewpoints_[0].position);
       }
-      viewable_frontier_cnt_ -= fis->viewpoints_.size() == 0 ? 1 : 0;
+      viewable_frontier_cnt_ += fis->viewpoints_.size() == 0 ? 0 : 1;
       
       // draw frontiers in different colors
       color_t color = getColor(cidx++);
       bv_frontiers_->addPoint(Eigen::Vector3d(fis->center_.x(),fis->center_.y(),fis->center_.z()), color.r,color.g,color.b, 1.0);
-      if (fis->viewpoints_.size() > 0)
+      for (auto &v : fis->viewpoints_)
       {
-        viewpoint_t v = fis->viewpoints_[0];
+        
         if (v.coverage >= min_coverage_)
         {
           Eigen::Vector3d           center(v.position.x(), v.position.y(), v.position.z());
-          double                    cube_scale  = tree_->getResolution() * 1.0;
+          double                    cube_scale  = tree_->getResolution() * (v.position == fis->viewpoints_[0].position ? 0.6 : 0.2);
           Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
           Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
           mrs_lib::geometry::Cuboid c(center, size, orientation);
-          bv_frontiers_->addCuboid( c, 1.0, 0.0, 1.0, 1.0, true);   
+          bv_frontiers_->addCuboid( c,  color.r,color.g,color.b, 1.0, true); 
         }
       }
       
@@ -447,7 +457,7 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
       }
     }
     
-    ROS_INFO("[MRsExplorer]: final frontier count: %i/%i/%i/%i (total/rem/add/0v)", fis_c_.size(), removed_frontiers_.size(), fis_c_.size()-tmp, viewable_frontier_cnt_);
+    ROS_INFO("[MRsExplorer]: final frontier count: %i/%i/%i/%i (total/rem/add/0v)", fis_c_.size(), removed_frontiers_.size(), added_frontiers_.size(), viewable_frontier_cnt_);
 }
 
 }

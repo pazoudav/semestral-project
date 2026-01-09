@@ -71,6 +71,7 @@ namespace mrs_octomap_planner
     double _local_zone_width_;
     double _local_zone_height_;
     double _replanning_distance_;
+    double _flight_free_distance_;
     double _big_distance_;
     double _heading_weight_;
     double _skip_path_point_distance_;
@@ -80,6 +81,9 @@ namespace mrs_octomap_planner
     double _resample_factor_;
     double _max_cost_;
     int    _node_max_age_;
+    int    _max_neighbors_;
+    double _min_neighbor_distance_;
+    double _max_neighbor_distance_;
     int    _init_matrix_size_;
     int    _frontier_min_size_;
     int    _min_eigen_;
@@ -113,6 +117,7 @@ namespace mrs_octomap_planner
     std::mutex                                mutex_frontiers_;
     std::mutex                                mutex_local_zone_;
     std::mutex                                mutex_PRM_;
+    std::mutex                                mutex_TSP_;
     std::shared_ptr<OcTree_t>                 octree_ = nullptr;
     std::string                               octree_frame_;
     std::shared_ptr<mrs_lib::BatchVisualizer> bv_frontiers_;
@@ -124,6 +129,7 @@ namespace mrs_octomap_planner
 
     std::atomic<bool> map_update_;
     std::atomic<bool> map_ready_;
+    std::atomic<bool> tsp_ready_;
     // std::atomic<bool> valid_path_;
     octomap::point3d position_before_map_update_;
 
@@ -203,7 +209,8 @@ namespace mrs_octomap_planner
     param_loader.loadParam("zone/local/width",_local_zone_width_);
     param_loader.loadParam("zone/local/height",_local_zone_height_);
 
-    param_loader.loadParam("planning/replanning_distance",_replanning_distance_);
+    param_loader.loadParam("planning/replanning_distance",_replanning_distance_); 
+    param_loader.loadParam("planning/flight_free_distance",_flight_free_distance_);  
     param_loader.loadParam("planning/big_distance",_big_distance_);
     param_loader.loadParam("planning/heading_weight",_heading_weight_);
     param_loader.loadParam("planning/skip_path_point_distance",_skip_path_point_distance_);
@@ -215,7 +222,11 @@ namespace mrs_octomap_planner
     param_loader.loadParam("prm/resample_factor",_resample_factor_);
     param_loader.loadParam("prm/max_cost",_max_cost_);
     param_loader.loadParam("prm/node_max_age",_node_max_age_);
+    param_loader.loadParam("prm/max_neighbors",_max_neighbors_);
+    param_loader.loadParam("prm/min_neighbor_distance",_min_neighbor_distance_);
+    param_loader.loadParam("prm/max_neighbor_distance",_max_neighbor_distance_);
     param_loader.loadParam("prm/init_matrix_size",_init_matrix_size_);
+
 
     param_loader.loadParam("frontiers/min_size",_frontier_min_size_);
     param_loader.loadParam("frontiers/min_svd_eigen_value",_min_eigen_);
@@ -310,7 +321,10 @@ namespace mrs_octomap_planner
                                               _free_space_dia_,
                                               _ovelap_coefficient_,
                                               _resample_factor_,
-                                              _node_max_age_);
+                                              _node_max_age_,
+                                              _max_neighbors_,
+                                              _min_neighbor_distance_,
+                                              _max_neighbor_distance_);
     flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_/2.0, -_flight_zone_width_/2.0, _flight_zone_floor_), 
                     .max=octomap::point3d( _flight_zone_width_/2.0 , _flight_zone_width_/2.0, _flight_zone_floor_+_flight_zone_height_)};
 
@@ -319,6 +333,7 @@ namespace mrs_octomap_planner
     map_update_ = false;
     map_ready_ = false;
     first_viewpoint_ = true;
+    tsp_ready_ = false;
     
     is_initialized_ = true;
     bv_map_frame_set_ = false;
@@ -331,9 +346,48 @@ namespace mrs_octomap_planner
   void Explorer::timerMain([[maybe_unused]] const ros::TimerEvent& evt) 
   {
     // ROS_ERROR_THROTTLE(1.0, "[MrsExplorer]: MAIN LOOP in '%s' STATE", _state_names_[state_].c_str());
-    if (!is_initialized_) {
+    if (!is_initialized_ || !map_ready_) {
       return;
     }
+
+    // // if (map_update_.exchange(false))
+    // {
+    //   ROS_ERROR("MAP UPDATED");
+    //   // std::shared_ptr<OcTree_t> tree;
+    //   // {
+    //   //   std::scoped_lock lock(mutex_octree_);
+    //   //   tree = std::make_shared<OcTree_t>(*octree_);
+    //   // }
+
+    //   // AABB local_zone;
+    //   // {
+    //   //   std::scoped_lock lock(mutex_local_zone_);
+    //   //   local_zone = local_zone_;
+    //   // }
+    //   // {
+    //   //   // std::scoped_lock lock(mutex_frontiers_),; // mutex_PRM_);
+    //   //   // // adding new viewpoints to the map, no need to check in they are in free space, gaurenteed in viewpoint creation
+    //   //   // for (auto &fis : frontier_manager_->added_frontiers_)
+    //   //   // {
+    //   //   //   if (fis->viewpoints_.size() > 0)
+    //   //   //   {
+    //   //   //     prm_manager_->addNode(fis->viewpoints_[0].position);
+    //   //   //   }
+    //   //   // }
+    //   //   // add and remove nodes only from regeon in lidar vilibility
+    //   //   // prm_manager_->updateZone(tree, local_zone, true);
+    //   // }
+    //   {
+    //     if (map_update_.exchange(false)){
+    //     std::scoped_lock lock(mutex_TSP_, mutex_frontiers_);
+    //     tsp_solver_.removeFrontiers(frontier_manager_->removed_frontiers_);
+    //     tsp_solver_.addFrontiers(frontier_manager_->added_frontiers_);
+    //     }
+    //   }
+    //   tsp_ready_ = true;
+      
+    // }
+
   }
 
 
@@ -367,16 +421,11 @@ namespace mrs_octomap_planner
 
     if (map_update_.exchange(false))
     {
-      std::scoped_lock lock(mutex_frontiers_, mutex_PRM_);
-      // adding new viewpoints to the map, no need to check in they are in free space, gaurenteed in viewpoint creation
-      for (auto &fis : frontier_manager_->fis_c_)
+      std::scoped_lock lock(mutex_PRM_, mutex_frontiers_);
+      for (auto &viewpoint_position : frontier_manager_->added_frontiers_)
       {
-        if (fis->viewpoints_.size() > 0 && std::find(frontier_manager_->added_frontiers_idx_.begin(), frontier_manager_->added_frontiers_idx_.end(), fis->id_) != frontier_manager_->added_frontiers_idx_.end())
-        {
-          prm_manager_->addNode(fis->viewpoints_[0].position);
-        }
+        prm_manager_->addNode(viewpoint_position);
       }
-      // add and remove nodes only from regeon in lidar vilibility
       prm_manager_->updateZone(tree, local_zone, true);
     }
     else
@@ -384,6 +433,7 @@ namespace mrs_octomap_planner
       std::scoped_lock lock(mutex_PRM_);
       prm_manager_->updateZone(tree, local_zone, false);
     }
+
 
     
     
@@ -405,16 +455,37 @@ namespace mrs_octomap_planner
     {
       ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: map not ready, cannot calculate PATH");
       return;
-    }
+    }  
+    
+    if (!tsp_ready_)
+    {
+      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: TSP not ready, cannot calculate PATH");
+      return;
+    }  
 
+    // return;
+
+
+    // ROS_ERROR("PLANNIG PATH timer out");
     ros::Time t0 = ros::Time::now();
 
     // dont generate trajectory if path generation unsuccesful of no new path needed
+    // ROS_ERROR("PLANNIG PATH pre call makePath");
     bool new_path = makePath();
     if (!new_path)
     {
       return;
     }
+
+    for (int i=0; i+1<path_.size(); i++)
+    {
+      bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(path_[i].x(),   path_[i].y(),   path_[i].z()),
+                                              Eigen::Vector3d(path_[i+1].x(), path_[i+1].y(), path_[i+1].z())),
+                                                1.0, 0.0, 1.0, 1.0);  
+    } 
+    bv_path_->publish();
+    bv_path_->clearBuffers();
+
 
     bool success = makeTrajectory();
 
@@ -427,17 +498,8 @@ namespace mrs_octomap_planner
     ros::Duration dt = ros::Time::now() - t0;
     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: PATH update %.1fms", dt.toNSec()/1000000.0);
 
-    
-    for (int i=0; i+1<path_.size(); i++)
-    {
-      bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(path_[i].x(),   path_[i].y(),   path_[i].z()),
-                                              Eigen::Vector3d(path_[i+1].x(), path_[i+1].y(), path_[i+1].z())),
-                                                1.0, 0.0, 1.0, 1.0);  
-    } 
-
-    bv_path_->publish();
-    bv_path_->clearBuffers();
   }
+
 
   // processes new global map and extracts new frontiers
   void Explorer::callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg)
@@ -456,7 +518,7 @@ namespace mrs_octomap_planner
     }
     mrs_lib::set_mutexed(mutex_octree_, octree_local.value(), octree_);
     mrs_lib::set_mutexed(mutex_octree_, msg->header.frame_id, octree_frame_);
-    map_update_ = true;
+    
 
     if (!bv_map_frame_set_) {
       bv_frontiers_->setParentFrame(msg->header.frame_id);
@@ -475,7 +537,15 @@ namespace mrs_octomap_planner
     ROS_INFO("[MrsExplorer]: new frontiers succesfuly found");
     bv_frontiers_->publish();
     bv_frontiers_->clearBuffers();
-    map_ready_ = true;
+    
+    {
+      std::scoped_lock lock(mutex_TSP_, mutex_frontiers_);
+      tsp_solver_.removeFrontiers(frontier_manager_->removed_frontiers_);
+      tsp_solver_.addFrontiers(frontier_manager_->added_frontiers_);
+    }
+    map_ready_  = true;
+    map_update_ = true;
+    tsp_ready_  = true;
   }
 
 
@@ -528,6 +598,7 @@ namespace mrs_octomap_planner
 bool Explorer::makePath()
 {
   // ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: starting path (re)plannig");
+
   ros::Time t0 = ros::Time::now();
 
   auto res = getPosition();
@@ -566,7 +637,6 @@ bool Explorer::makePath()
     return false;
   }
   
-
   // check if current path from predition is in collision
   bool isInFreeSpace = false;
   std::shared_ptr<OcTree_t> tree;
@@ -576,79 +646,39 @@ bool Explorer::makePath()
   }
   for (auto & point : prediction.position)
   {
-    isInFreeSpace = isFreeSpace(octomap::point3d(point.x,point.y,point.z), 0.5*_free_space_dia_, tree);
+    isInFreeSpace = isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
     if (!isInFreeSpace)
     {
       ROS_WARN("[MrsExplorer]: collision detected in trajectory, replanning");
       break;
     }
   }
-
   // if is in collision recalculate path, otherwise check if drone is near end of the path and replan, othervise do nothing 
-  geometry_msgs::Point p = prediction.position[prediction.position.size()-1];
+  geometry_msgs::Point p = prediction.position.back();
   if (isInFreeSpace && start_coord.distance(octomap::point3d(p.x,p.y,p.z)) > _replanning_distance_)
   {
     // ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, too far from goal %f", start_coord.distance(octomap::point3d(p.x,p.y,p.z)));
     return false;
   }
-  // start at current position
+
   current_viewpoint_ = start_coord;
-  int n = 0;
-  std::vector<viewpoint_t> viable_viewpoints(0);
-  viable_viewpoints.push_back(viewpoint_t{.position=current_viewpoint_, .coverage=10000});
-
-  // ectract viewpoints from frontiers
+  std::vector<octomap::point3d> glob_path;
   {
-    std::scoped_lock lock(mutex_frontiers_);
-
-    for (auto & fis : frontier_manager_->fis_c_)
-    {
-      if (fis->viewpoints_.size() > 0) 
-      {
-        viable_viewpoints.push_back(fis->viewpoints_[0]);
-        n++;
-      }
-    }
-  }  
-
-  ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: viable viewpoints %i", viable_viewpoints.size());
-  if (viable_viewpoints.size() == 1)
-  {
-    ROS_WARN("[MrsExplorer]: NO viable viewpoints");
-    return false;
+    std::scoped_lock lock(mutex_TSP_);
+    tsp_solver_.setStart(current_viewpoint_);
+    glob_path = tsp_solver_.solve();
   }
   
-  // calculate distance matrix for global path calculation
-  Eigen::MatrixXd dist_matrix(n+1,n+1);
-  for (int i=1; i<n+1; i++ )
-  {
-    for (int j=1; j<n+1; j++ )
-    {
-      dist_matrix(i,j) = viable_viewpoints[i].position.distance(viable_viewpoints[j].position);
-    }
-    double c = std::acos(velocity.dot(viable_viewpoints[i].position-current_viewpoint_) / ((viable_viewpoints[i].position-current_viewpoint_).norm()*velocity.norm()) );
-    c = c >= _big_distance_/10.0 ? 0.0 : c;
-    dist_matrix(0,i) = current_viewpoint_.distance(viable_viewpoints[i].position) + _heading_weight_*c;
-    dist_matrix(i,0) = _big_distance_;
-    dist_matrix(i,i) = 10*_big_distance_;
-  }
-  dist_matrix(0,0) = 10*_big_distance_;
-  
-  std::vector<int> glob_path = tsp_solver_.solve(dist_matrix, false);
-  // process found global path to begin at node 0 (current position)
-  auto zero_itr = std::find(glob_path.begin(), glob_path.end(), 0);
-  std::rotate(glob_path.begin(), glob_path.begin() + std::distance(glob_path.begin(), zero_itr), glob_path.end());
-
-  if (glob_path.size() != n+1)
+  if (glob_path.size() == 0)
   {
     ROS_WARN("[MrsExplorer]: TSP tour not found");
     return false;
   }
-
+  ROS_ERROR("glob path size %i",glob_path.size());
   for (int i=0; i<glob_path.size()-1; i++)
   {
-    auto v0 = viable_viewpoints[glob_path[i]].position;
-    auto v1 = viable_viewpoints[glob_path[i+1]].position;
+    auto v0 = glob_path[i];
+    auto v1 = glob_path[i+1];
     bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(v0.x(), v0.y(), v0.z()),
                                             Eigen::Vector3d(v1.x(), v1.y(), v1.z())),
                                             0.0, 1.0, 0.0, 1.0);  
@@ -661,7 +691,7 @@ bool Explorer::makePath()
   {
     {
       std::scoped_lock lock(mutex_PRM_);
-      path = prm_manager_->findPath(viable_viewpoints[glob_path[0]].position, viable_viewpoints[glob_path[i++]].position, velocity);
+      path = prm_manager_->findPath(glob_path[0], glob_path[i++], velocity);
     }
   }
   
@@ -671,6 +701,9 @@ bool Explorer::makePath()
     {
       std::scoped_lock lock(mutex_PRM_);
       path = prm_manager_->simplifyFreeSpacePath(path);
+      std::reverse(path.begin(), path.end());
+      path = prm_manager_->simplifyFreeSpacePath(path);
+      std::reverse(path.begin(), path.end());
     }
     
     path_ = std::vector<octomap::point3d>(0);

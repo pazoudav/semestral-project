@@ -65,8 +65,8 @@ private:
 public:
   std::vector<std::unique_ptr<FIS>> fis_c_;
   int viewable_frontier_cnt_;
-  std::vector<int> removed_frontiers_;
-  std::vector<int> added_frontiers_idx_;
+  std::vector<octomap::point3d> removed_frontiers_;
+  std::vector<octomap::point3d> added_frontiers_;
 
   FrontierManager(const std::shared_ptr<mrs_lib::BatchVisualizer>&  bv_frontiers,
                   double                                            free_space_diameter,
