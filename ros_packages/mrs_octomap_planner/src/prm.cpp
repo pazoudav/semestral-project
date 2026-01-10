@@ -282,12 +282,12 @@ std::vector<octomap::point3d> PRM::findPath(octomap::point3d start, octomap::poi
 
   if (start_candidates.size() == 0)
   {
-    ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: search start is far from nav nodes");
+    // ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: search start is far from nav nodes");
     return path;
   }
   if (goal_candidates.size() == 0)
   {
-    ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: search goal is far from nav nodes");
+    // ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: search goal is far from nav nodes");
     return path;
   }
   if (velocity.norm() > 0.001)
@@ -299,7 +299,7 @@ std::vector<octomap::point3d> PRM::findPath(octomap::point3d start, octomap::poi
   auto node_path = findNodePath(start_candidates[0], goal_candidates[0]);
   if (node_path.nodes.size() == 0)
   {
-    ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: A* found no path");
+    // ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: A* found no path");
     return path;
   }
   frozen_path_ = std::vector<bool>(nodes_.size(), false);
@@ -420,6 +420,27 @@ std::vector<octomap::point3d> PRM::simplifyFreeSpacePath(std::vector<octomap::po
   }
   simplified_path.push_back(path[next]);
   return simplified_path;
+}
+
+
+double PRM::distance(octomap::point3d start, octomap::point3d goal)
+{
+  // return start.distance(goal);
+  auto path = findPath(start, goal, octomath::Vector3(0.0,0.0,0.0));
+  if (path.size() == 0){
+    return INVALID_DISTANCE;
+  }
+
+  path = simplifyFreeSpacePath(path);
+  // std::reverse(path.begin(), path.end());
+  // path = simplifyFreeSpacePath(path);
+  
+  double distance = 0.0;;
+  for (int i=0; i<path.size()-1; i++){
+    distance += path[i].distance(path[i+1]);
+  }
+
+  return distance;
 }
 
 

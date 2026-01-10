@@ -12,11 +12,12 @@ namespace mrs_octomap_planner
 
 
 
-TSPsolver::TSPsolver(int max_duration)
+TSPsolver::TSPsolver(int max_duration, distance_funcion_t distanceFunciton)
 {
   duration_ = ros::Duration(0, max_duration);
   cost_matrix_ = Eigen::MatrixXd(32,32);
   viewpoint_position_ = {octomap::point3d(0.0,0.0,0.0)};
+  distanceFunciton_ = distanceFunciton;
 }
 
 TSPsolver::~TSPsolver()
@@ -57,6 +58,9 @@ std::vector<int> TSPsolver::generateGreedySolution(int n, const Eigen::MatrixXd 
 
   for (int i = 1; i < n; i++)
   {
+    if (!isAccesible_[i]){
+      continue;
+    }
     auto row       = cost_matrix.row(solution.back());
     double min_val = std::numeric_limits<double>::max();
     int best_neighbor;
@@ -83,74 +87,93 @@ double TSPsolver::computeCost(const Eigen::MatrixXd &cost_matrix, const std::vec
   int size = solution.size();
   for (int i=0; i<size; i++)
   {
-    cost += cost_matrix(solution[i], solution[(i+1)%size]);
+    int idx0 = i;
+    int idx1 = (i+1)%size;
+    cost += cost_matrix(solution[idx0], solution[idx1]);
+    if (solution[idx0] == 0){
+      cost += 3*start_velocity_.normalized().dot((viewpoint_position_[idx1] - viewpoint_position_[idx0]).normalized());
+    }
+    else if (solution[idx1] != 0)
+    {
+      int prev_idx = (i-1)%size;
+      cost += (viewpoint_position_[idx0] - viewpoint_position_[prev_idx]).normalized().dot((viewpoint_position_[idx1] - viewpoint_position_[idx0]).normalized());
+    }
   }
+
+
   return cost;
 }
 
-std::vector<octomap::point3d> TSPsolver::solve()
+std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
 {
+  // ROS_ERROR("start TSP solve");
+  start_velocity_ = velocity;
   int n = viewpoint_position_.size();
   auto permutation = solve(cost_matrix_.block(0,0,n,n), true);
   std::vector<octomap::point3d> solution(0);
   for (auto i : permutation){
     solution.push_back(viewpoint_position_[i]);
   }
+  // ROS_ERROR("end TSP solve");
   return solution;
 }
 
 std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse_solution)
 {
-  int size = cost_matrix.cols();
+  // int size = cost_matrix.cols();
   std::vector<int> best_solution;
   double best_cost = std::numeric_limits<double>::max();
 
   start_ = ros::Time::now();
 
   reuse_solution = true;
-  prev_solution_ = generateGreedySolution(size, cost_matrix, true);
+  std::vector<int> solution = generateGreedySolution(cost_matrix.cols(), cost_matrix, true);
 
-  int cnt = 0;
-  while (ros::Time::now() - start_ < duration_)
-  { 
-    // fist use greedy solution starting at node 0, then try solutions staring at other nodes
-    std::vector<int> solution;
-    if (reuse_solution && cnt  == 0)
+  // int cnt = 0;
+
+  // // fist use greedy solution starting at node 0, then try solutions staring at other nodes
+  // std::vector<int> solution;
+  // if (reuse_solution && cnt  == 0)
+  // {
+  //   solution = prev_solution_;
+  // }
+  // else
+  // {
+  //   solution = generateGreedySolution(cost_matrix.cols(), cost_matrix);
+  // }
+
+  double cost = computeCost(cost_matrix, solution);
+  int solution_size = solution.size();
+  // try to inmprove cost by randomly swaping two nodes
+  for (int i=0; i<solution_size*5000; i++)
+  {
+    // if (solution[0] != 0)
+    // {
+    //   auto zero_itr = std::find(solution.begin(), solution.end(), 0);
+    //   std::rotate(solution.begin(), solution.begin() + std::distance(solution.begin(), zero_itr), solution.end());
+    // }
+    int idx0 = rand() % solution_size;
+    int idx1 = rand() % solution_size;
+    std::reverse(solution.begin()+idx0, solution.begin()+idx1);
+    double temp_cost = computeCost(cost_matrix, solution);
+    if (temp_cost < cost)
     {
-      solution = prev_solution_;
+      cost = temp_cost;
     }
     else
     {
-      solution = generateGreedySolution(size,cost_matrix);
-    }
-
-    double cost = computeCost(cost_matrix, solution);
-
-    // try to inmprove cost by randomly swaping two nodes
-    for (int i=0; i<size*5000; i++)
-    {
-      int idx0 = rand() % size;
-      int idx1 = rand() % size;
       std::reverse(solution.begin()+idx0, solution.begin()+idx1);
-      double temp_cost = computeCost(cost_matrix, solution);
-      if (temp_cost < cost)
-      {
-        cost = temp_cost;
-      }
-      else
-      {
-        std::reverse(solution.begin()+idx0, solution.begin()+idx1);
-      }
     }
-    
-    if (cost < best_cost)
-    {
-      best_cost = cost;
-      best_solution = solution;
-    }
-
-    cnt++;
   }
+  
+  if (cost < best_cost)
+  {
+    best_cost = cost;
+    best_solution = solution;
+  }
+
+  // cnt++;
+  
   // process found global path to begin at node 0 (current position)
   auto zero_itr = std::find(best_solution.begin(), best_solution.end(), 0);
   std::rotate(best_solution.begin(), best_solution.begin() + std::distance(best_solution.begin(), zero_itr), best_solution.end());
@@ -162,7 +185,13 @@ std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse
 
 double TSPsolver::computeDistance(octomap::point3d a, octomap::point3d b)
 {
-  return a.distance(b);
+  double dist = distanceFunciton_(a,b);
+  if (dist == INVALID_DISTANCE)
+  {
+    dist = BIG_DISTANCE;
+  }
+  
+  return dist;
 }
 
 
@@ -216,7 +245,7 @@ void TSPsolver::addFrontiers(std::vector<octomap::point3d> added_positions)
       cost_matrix_(i, size) = dist;
       cost_matrix_(size, i) = dist;
     }
-    cost_matrix_(size, size) = 10000000.0;
+    cost_matrix_(size, size) = BIG_DISTANCE;
     viewpoint_position_.push_back(viewpoint );
     // ROS_WARN("adding %.1f %.1f %.1f", viewpoint.x(), viewpoint.y(), viewpoint.z());
   }
@@ -228,13 +257,18 @@ void TSPsolver::setStart(octomap::point3d position)
 {
   // ROS_ERROR("seting start");
   start_position_ = position;
+  isAccesible_ = std::vector<bool>(viewpoint_position_.size(), true);
   for (int i=1; i<viewpoint_position_.size(); i++)
   {
     double dist = computeDistance(start_position_, viewpoint_position_[i]);
-    cost_matrix_(i, 0) = 1000000.0;
+    // ROS_WARN("distance=%.2f, idx=%i", dist, i);
+    cost_matrix_(i, 0) = BIG_DISTANCE/100;
     cost_matrix_(0, i) = dist;
+    if (dist == BIG_DISTANCE){
+      isAccesible_[i] = false;
+    }
   }
-  cost_matrix_(0,0) = 10000000.0;
+  cost_matrix_(0,0) = BIG_DISTANCE;
   viewpoint_position_[0] = start_position_;
   // ROS_ERROR("start set");
 }

@@ -24,6 +24,9 @@ private:
     // std::vector<unsigned long> viewpoint_id_;
     std::vector<octomap::point3d> viewpoint_position_;
     octomap::point3d start_position_;
+    distance_funcion_t distanceFunciton_;
+    octomath::Vector3 start_velocity_;
+    std::vector<bool> isAccesible_;
     
 
     std::vector<int> generateRadnSolution(int n);
@@ -33,11 +36,11 @@ private:
 
 public:
     TSPsolver();
-    TSPsolver(int max_duration);
+    TSPsolver(int max_duration, distance_funcion_t distanceFunciton);
     ~TSPsolver();
     
     std::vector<int> solve(const Eigen::MatrixXd &cost_matrix, bool reuse_solution);
-    std::vector<octomap::point3d> solve();
+    std::vector<octomap::point3d> solve(octomath::Vector3 velocity);
     void removeFrontiers(std::vector<octomap::point3d> frontiers);
     void addFrontiers(std::vector<octomap::point3d> frontiers);
     void setStart(octomap::point3d position);

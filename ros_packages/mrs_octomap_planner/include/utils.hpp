@@ -9,6 +9,7 @@
 #include <iostream>
 #include <memory>
 #include <math.h>
+#include <functional>
 
 // /home/david/CVUT/diplomka/mrs_apptainer/user_ros_workspace/include_ros/**
 // /home/david/CVUT/diplomka/mrs_apptainer/user_ros_workspace/include_eigen/**
@@ -18,6 +19,10 @@ namespace mrs_octomap_planner
 {
 
 typedef std::vector<octomap::point3d> frontier_t;
+typedef std::function<double (octomap::point3d, octomap::point3d)> distance_funcion_t;
+
+const double INVALID_DISTANCE = -1.0;
+const double BIG_DISTANCE = 1000000.0;
 
 struct color_t
 {
