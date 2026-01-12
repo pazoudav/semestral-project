@@ -237,6 +237,11 @@ float getRand(float a, float b)
   float r = getRand();
   return a + (b-a)*r;
 }
+int getRand(int a, int b)
+{
+  float r = getRand();
+  return (int) std::floor(a + (b-a)*r);
+}
 
 // sample random in point from AABB
 octomap::point3d getSampleFromAABB(AABB a)

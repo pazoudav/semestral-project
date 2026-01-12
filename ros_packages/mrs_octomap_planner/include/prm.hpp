@@ -88,6 +88,7 @@ public:
   std::vector<octomap::point3d> simplifyRaycastPath(std::vector<octomap::point3d> path);
   std::vector<octomap::point3d> simplifyFreeSpacePath(std::vector<octomap::point3d> path);
   double distance(octomap::point3d start, octomap::point3d goal);
+  path_info_t extraDistance(octomap::point3d start, octomap::point3d goal);
   // void freezePath();
 };
 }

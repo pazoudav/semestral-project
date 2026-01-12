@@ -271,11 +271,11 @@ std::vector<octomap::point3d> PRM::findPath(octomap::point3d start, octomap::poi
   //   ROS_WARN("search start not in free space");
   //   return path;
   // }
-  // if (!isFreeSpace(goal, free_space_diameter_, tree_))
-  // {
-  //   ROS_WARN("search goal not in free space");
-  //   return path;
-  // }
+  if (!isFreeSpace(goal, free_space_diameter_/2.0, tree_))
+  {
+    ROS_WARN("search goal not in free space");
+    return path;
+  }
 
   auto start_candidates = findCloseNodes(start, free_space_diameter_);
   auto goal_candidates  = findCloseNodes(goal,  free_space_diameter_);
@@ -443,5 +443,35 @@ double PRM::distance(octomap::point3d start, octomap::point3d goal)
   return distance;
 }
 
+path_info_t PRM::extraDistance(octomap::point3d start, octomap::point3d goal)
+{
+  path_info_t result;
+  // return start.distance(goal);
+  auto path = findPath(start, goal, octomath::Vector3(0.0,0.0,0.0));
+  if (path.size() == 0){
+    return path_info_t{.distance=INVALID_DISTANCE};
+  }
+
+  path = simplifyFreeSpacePath(path);
+  // std::reverse(path.begin(), path.end());
+  // path = simplifyFreeSpacePath(path);
+  octomath::Vector3 incoming_velocity(0.0,0.0,0.0);
+  octomath::Vector3 segment_velocity(0.0,0.0,0.0);
+  for (int i=0; i<path.size()-1; i++){
+    result.distance += path[i].distance(path[i+1]);
+    result.height += std::abs(path[i].z() -  path[i+1].z());
+    if (i>0){
+      octomath::Vector3 segment0 = (path[i] - path[i-1]).normalized();
+      octomath::Vector3 segment1 = (path[i+1] - path[i]).normalized();
+      result.angle_delta += std::acos(segment0.dot(segment1));
+      segment_velocity = segment1-segment0;
+      result.velocity_delta += (segment_velocity-incoming_velocity).norm();
+      incoming_velocity = segment_velocity;
+    }
+
+  }
+
+  return result;
+}
 
 }

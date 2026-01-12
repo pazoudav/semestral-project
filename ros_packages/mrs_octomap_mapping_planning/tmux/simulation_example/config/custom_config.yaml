@@ -36,4 +36,4 @@ mrs_uav_trajectory_generation:
   # trajectory generator to work with.
   path_straightener:
     enabled: false
-    max_deviation: 0.20 # [m]
+    max_deviation: 0.10 # [m]

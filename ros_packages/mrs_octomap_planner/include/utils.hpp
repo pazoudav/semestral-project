@@ -18,13 +18,7 @@
 namespace mrs_octomap_planner
 {
 
-typedef std::vector<octomap::point3d> frontier_t;
-typedef std::function<double (octomap::point3d, octomap::point3d)> distance_funcion_t;
-
-const double INVALID_DISTANCE = -1.0;
-const double BIG_DISTANCE = 1000000.0;
-
-struct color_t
+  struct color_t
 {
   float r;
   float g;
@@ -36,6 +30,23 @@ struct AABB
   octomap::point3d min;
   octomap::point3d max;
 };
+
+struct path_info_t
+{
+  double distance=0.0;
+  double velocity_delta=0.0;
+  double angle_delta=0.0;
+  double height=0.0;
+};
+
+
+typedef std::vector<octomap::point3d> frontier_t;
+typedef std::function<path_info_t (octomap::point3d, octomap::point3d)> distance_funcion_t;
+
+const double INVALID_DISTANCE = -1.0;
+const double BIG_DISTANCE = 1000000.0;
+
+
 
 // const float FREE_SPACE_SIZE = 1.6;
 // const float ZONE_HEIGHT = 11.0;
@@ -90,6 +101,7 @@ bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr
 
 float getRand();
 float getRand(float a, float b);
+int getRand(int a, int b);
 octomap::point3d getSampleFromAABB(AABB a);
 
 }
