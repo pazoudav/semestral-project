@@ -5,6 +5,8 @@
 #include "prm.hpp"
 
 
+
+
 namespace mrs_octomap_planner
 {
 
@@ -49,10 +51,12 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bo
   for (auto &node : nodes_){
 
     // update only nodes insed the zone
-    if (intersect(zone, node->position)){
+    if (intersect(zone, node->position))
+    {
       // remove nodes older then N (nodes with fewer neighbors liove longer to preserve connections to remote areas) and nodes no longer in free space
-      if (node->age++ > node_max_age_/(node->neighbors.size()+1) \
-            || (map_update && !isFreeSpace(node->position, free_space_diameter_, tree)))
+      node->age += 1;
+      if (node->age > node_max_age_/(node->neighbors.size()+1) \
+            || (map_update && !isFreeSpace(node->position, free_space_diameter_, tree)) || node->neighbors.size() == 0)
       {
         invalids++;
         node->valid = false;
@@ -70,12 +74,21 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bo
   while ( i < sample_cnt)
   {
     octomap::point3d sample = getSampleFromAABB(zone);
-    if (isFreeSpace(sample, free_space_diameter_, tree))
+    if (isFreeSpace(sample, 1.1*free_space_diameter_, tree))
     {
       addNode(sample);
     }
     i++;
   }
+
+  Eigen::Vector3d           z_min(zone.min.x(), zone.min.y(), zone.min.z());
+  Eigen::Vector3d           z_max(zone.max.x(), zone.max.y(), zone.max.z());
+  Eigen::Vector3d           center = (z_min+z_max)/2.0;// (cell.x(), cell.y(), cell.z());
+
+  Eigen::Vector3d           size = (z_max-z_min);
+  Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+  mrs_lib::geometry::Cuboid c(center, size, orientation);
+  bv_prm_->addCuboid( c, 0.9, 0.1, 0.1, 0.1, true); 
 
   for (auto &node : nodes_){
     bv_prm_->addPoint(Eigen::Vector3d(node->position.x(),node->position.y(),node->position.z()));
@@ -86,6 +99,7 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, bo
                                                     1.0, 0.0, 0.0, 0.1);
     }
   }
+  
   ROS_INFO_THROTTLE(1.0,"[MrsExplorer]: number of PRM nodes: %i", nodes_.size());
 }
 
@@ -100,7 +114,7 @@ void PRM::removeInvalidNodes()
     auto ne = std::remove_if(node->neighbors.begin(), node->neighbors.end(), 
                   [node](std::weak_ptr<node_t> neighbor_p){
                               return neighbor_p.expired() || !neighbor_p.lock()->valid;});
-          node->neighbors.erase(ne, node->neighbors.end());
+    node->neighbors.erase(ne, node->neighbors.end());
 
     if (!node->valid)
     {
@@ -127,31 +141,6 @@ void PRM::addNode(octomap::point3d position)
   node->neighbors=std::vector<std::weak_ptr<node_t>>(0);
   node->idx = nodes_.size();
   nodes_.push_back(node);
-  // std::vector<dist>
-  // node = nodes_.back();
-
-  // for (int i=0; i<nodes_.size()-1; i++)
-  // {
-  //   auto neighbor = nodes_[i];
-  //   double dist = node->position.distance(neighbor->position);
-
-  //   // if node is realy close dont check fron free space between them
-  //   if (dist <= free_space_diameter_*neighbor_overlap_)
-  //   {
-  //     node->neighbors.push_back(neighbor);
-  //     neighbor->neighbors.push_back(node);
-  //   }
-  //   // if ndoe is a bit further away, check if there is free space between them
-  //   else if (dist <= 2*free_space_diameter_*neighbor_overlap_)
-  //   {
-  //     if (isFreeSpace(node->position + (neighbor->position - node->position)*(0.5/dist), free_space_diameter_, tree_))
-  //     {
-  //       node->neighbors.push_back(neighbor);
-  //       neighbor->neighbors.push_back(node);
-  //     }
-      
-  //   }
-  // }
 
   auto close_nodes = findCloseNodes(position, max_neighbor_distance_);
 
@@ -164,7 +153,7 @@ void PRM::addNode(octomap::point3d position)
     {
       continue;
     }
-    else if (isFreeSpace(node->position + (nodes_[nidx]->position - node->position)*(0.25/dist), free_space_diameter_, tree_))
+    else if (isFreeSpace(node->position + (nodes_[nidx]->position - node->position)*(0.5/dist), free_space_diameter_, tree_))
     {
       node->neighbors.push_back(nodes_[nidx]);
       nodes_[nidx]->neighbors.push_back(node);
@@ -173,9 +162,6 @@ void PRM::addNode(octomap::point3d position)
       break;
     }
   }
-    
-  
-
 } 
 
 

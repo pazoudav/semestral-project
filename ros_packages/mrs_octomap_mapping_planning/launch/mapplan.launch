@@ -167,7 +167,7 @@
 
     <arg name="standalone" value="true" />
     <!-- <arg name="nodelet_manager_name" value="$(arg nodelet_manager_name)" /> -->
-    <arg name="custom_config" value="$(arg config_octomap_planner)" />
+    <!-- <arg name="custom_config" value="$(arg config_octomap_planner)" /> -->
     <arg name="debug" value="false" />
 
   </include>

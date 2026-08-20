@@ -1,0 +1,5 @@
+PROBLEM_FILE = /home/david/CVUT/diplomka/mrs_apptainer/user_ros_workspace/src/semestral-project/ros_packages/mrs_octomap_planner/LKH/cost_matrix.txt
+GAIN23 = YES
+TIME_LIMIT = 0.5
+OUTPUT_TOUR_FILE =/home/david/CVUT/diplomka/mrs_apptainer/user_ros_workspace/src/semestral-project/ros_packages/mrs_octomap_planner/LKH/solution.txt
+RUNS = 1

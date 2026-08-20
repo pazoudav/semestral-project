@@ -3,12 +3,14 @@
 
 namespace mrs_octomap_planner
 {
+  unsigned long START_ID = 0;
 
   TSPsolver::TSPsolver()
 {
   cost_matrix_ = Eigen::MatrixXd(32,32);
-  viewpoint_position_ = {octomap::point3d(0.0,0.0,0.0)};
+  viewpoint_positions_ = {octomap::point3d(0.0,0.0,0.0)};
   isAccesible_ = {true};
+  tree_ = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>(); 
 }
 
 
@@ -17,116 +19,306 @@ TSPsolver::TSPsolver(int max_duration, distance_funcion_t distanceFunciton)
 {
   duration_ = ros::Duration(0, max_duration);
   cost_matrix_ = Eigen::MatrixXd(32,32);
-  viewpoint_position_ = {octomap::point3d(0.0,0.0,0.0)};
+  viewpoint_positions_ = {octomap::point3d(0.0,0.0,0.0)};
   isAccesible_ = {true};
   distanceFunciton_ = distanceFunciton;
+  tree_ = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>(); 
 }
 
 TSPsolver::~TSPsolver()
 {
 }
 
-std::vector<int> TSPsolver::generateRadnSolution(int n)
-{
-  std::vector<double> temp_solution(0);
-  std::vector<int> solution(0);
-  for (int i = 0; i < n; i++)
-  {
-    temp_solution.push_back(rand());
-    solution.push_back(i);
-  }
-
-  std::sort(solution.begin(), solution.end(), [&temp_solution](int a, int b)
-        {
-          return temp_solution[a] < temp_solution[b];
-        });
-
-  return solution; 
-}
-
-
-std::vector<int> TSPsolver::generateGreedySolution(int n, const Eigen::MatrixXd &cost_matrix, bool zero_start)
-{
-  std::vector<int> solution(0);
-
-  if (zero_start)
-  {
-    solution.push_back(0);
-  }
-  else
-  {
-    solution.push_back((int)std::floor(getRand()*n*0.999999));
-  }
-
-  for (int i = 1; i < n; i++)
-  {
-    if (!isAccesible_[i]){
-      continue;
-    }
-    auto row       = cost_matrix.row(solution.back());
-    double min_val = std::numeric_limits<double>::max();
-    int best_neighbor;
-    for (int j=0; j<n; j++)
-    {
-      if (std::find(solution.begin(), solution.end(), j) == solution.end()) 
-      {
-        if (row(j) < min_val)
-        {
-          min_val = row(j);
-          best_neighbor = j;
-        }
-      }
-    }
-    solution.push_back(best_neighbor); // std::distance(row.begin, min_itr));
-  }
-  return solution;
-}
-
-
-double TSPsolver::computeCost(const Eigen::MatrixXd &cost_matrix, const std::vector<int> &solution)
-{
-  double cost = 0.0;
-  int size = solution.size();
-  double dir_weight = 3.0;
-  double height_weight = 2.0;
-  int zero_position = std::distance(solution.begin(),std::find(solution.begin(), solution.end(), 0));
-  for (int i=0; i<size; i++)
-  {
-    int idx0 = i;
-    int idx1 = (i+1)%size;
-    cost += cost_matrix(solution[idx0], solution[idx1]);
-    if (solution[idx0] == 0)
-    {
-      cost += dir_weight*std::acos(start_velocity_.normalized().dot((viewpoint_position_[idx1] - viewpoint_position_[idx0]).normalized()));
-      cost += height_weight*std::abs(viewpoint_position_[idx1].z() - viewpoint_position_[idx0].z());
-    }
-    else if (solution[idx1] != 0)
-    {
-      int prev_idx = (i-1)%size;
-      int denominator = 5; // (i-zero_position) > 0 ? (i-zero_position) : (i-zero_position+size);
-      cost += (dir_weight/denominator)*std::acos((viewpoint_position_[idx0] - viewpoint_position_[prev_idx]).normalized().dot((viewpoint_position_[idx1] - viewpoint_position_[idx0]).normalized()));
-      cost += (height_weight/denominator)*std::abs(viewpoint_position_[idx1].z() - viewpoint_position_[idx0].z());
-    }
-    
-  }
-
-
-  return cost;
-}
 
 std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
 {
-  // ROS_ERROR("start TSP solve");
+  ROS_ERROR("start TSP solve");
   start_velocity_ = velocity;
-  int n = viewpoint_position_.size();
-  auto permutation = solve(cost_matrix_.block(0,0,n,n), true);
+  
+  constructDistanceMatrix();
+  int n = viewpoint_positions_.size();
+  auto permutation = LKHSolve(); //solve(cost_matrix_, true);
+
   std::vector<octomap::point3d> solution(0);
   for (auto i : permutation){
-    solution.push_back(viewpoint_position_[i]);
+    solution.push_back(viewpoint_positions_[i]);
   }
-  // ROS_ERROR("end TSP solve");
+  ROS_INFO("dist map size %d, solution size %d, permutation size %d", dist_map_.size(), n, permutation.size());
+  ROS_ERROR("end TSP solve");
   return solution;
 }
+
+
+
+double TSPsolver::computeDistance(octomap::point3d a, octomap::point3d b)
+{
+  path_info_t path_info = distanceFunciton_(a,b);
+  double weighed_distance;
+  if (path_info.distance == INVALID_DISTANCE)
+  {
+    weighed_distance = BIG_DISTANCE;
+  }
+  else
+  {
+    weighed_distance = path_info.distance; // + path_info.velocity_delta + 2*path_info.height;
+  }
+  return weighed_distance;
+}
+
+
+void TSPsolver::removeFrontiers()
+{
+  ROS_ERROR("REMOVED FRONTIERS TSP");
+  std::vector<unsigned long> nodes_to_remove(0);
+  for (auto &x: dist_map_)
+  {
+    if (!x.second.frontier->valid_)
+    {
+      nodes_to_remove.push_back(x.first);
+      x.second.frontier->removed_ = true;
+    }
+    std::vector<unsigned long> neighbors_to_remove(0);
+    for (auto &n : x.second.distances)
+    {
+      if (!dist_map_[n.first].frontier->valid_)
+      {
+        neighbors_to_remove.push_back(n.first);
+      }
+    }
+    for (auto &id: neighbors_to_remove)
+    {
+      auto it = x.second.distances.find(id);
+      if( it != x.second.distances.end() )
+        x.second.distances.erase( it );
+    }
+  }
+
+  ROS_ERROR("marked %d frontiers for removal", nodes_to_remove.size());
+
+  for (auto &id: nodes_to_remove)
+  {
+    // ROS_WARN("removing id %d with %d", id, dist_map_[id].frontier->viewpoints_.size());
+    auto it = dist_map_.find(id);
+    // if( it != dist_map_.end() )
+    dist_map_.erase(it);
+  }
+  ROS_ERROR("REMOVED FRONTIERS TSP");
+
+}
+  
+void TSPsolver::addFrontiers(std::vector<std::shared_ptr<FIS>> fis_c)
+{
+  ROS_ERROR("ADD FRONTIERS TSP");
+  ROS_WARN("all frontiers %d", fis_c.size());
+  ROS_WARN("dist map size %d", dist_map_.size());
+  for (auto &fis : fis_c)
+  {
+    // valid and not in dist_map_
+    if (fis->valid_ && fis->viewpoints_.size() > 0 && dist_map_.count(fis->id_) == 0)
+    {
+      // ROS_WARN("adding valid id %d", fis->id_);
+      planner_t new_node = {.frontier=fis, .isAccesible=true, .distances=std::map<unsigned long, float>()};
+      
+      for (auto &x: dist_map_)
+      {
+        // ROS_INFO("%d", x.first);
+        octomap::point3d p1 = fis->viewpoints_[0].position;
+        // ROS_INFO("%f %f %f", p1.x(), p1.y(), p1.z());
+        octomap::point3d p2 = x.second.frontier->viewpoints_[0].position;
+        // ROS_INFO("%f %f %f", p2.x(), p2.y(), p2.z());
+        double dist = computeDistance(p1, p2);
+        // ROS_INFO("%f", dist);
+        new_node.distances.insert({x.first, dist});
+        x.second.distances.insert({fis->id_, dist});
+      }
+      dist_map_.insert({fis->id_, new_node});
+    }    
+    else{
+      // ROS_WARN("not adding id %d", fis->id_);
+    }
+  }
+  ROS_WARN("dist map size %d", dist_map_.size());
+  ROS_ERROR("ADD FRONTIERS TSP");
+
+}
+
+void TSPsolver::setStart(octomap::point3d position)
+{
+  ROS_ERROR("SET START TSP");
+  auto it = dist_map_.find(START_ID);
+  if( it != dist_map_.end() )
+      dist_map_.erase( it );
+    
+  std::shared_ptr<FIS> fis = std::make_shared<FIS>();
+  fis->id_ = START_ID;
+  fis->viewpoints_ = std::vector<viewpoint_t>(0);
+  fis->viewpoints_.push_back((viewpoint_t){.position=position, .coverage=1});
+  planner_t new_node = {.frontier=fis, .isAccesible=true, .distances=std::map<unsigned long, float>()};
+      
+  for (auto &x: dist_map_)
+  {
+    double dist = computeDistance(fis->viewpoints_[0].position, x.second.frontier->viewpoints_[0].position);
+    new_node.distances.insert({x.first, dist});
+    x.second.distances.insert({fis->id_, dist});
+    if (dist == BIG_DISTANCE)
+      x.second.isAccesible = false;
+  }
+  dist_map_.insert({START_ID, new_node});
+  ROS_ERROR("SET START TSP");
+
+}
+
+void TSPsolver::constructDistanceMatrix()
+{
+  int size = dist_map_.size() - 1;
+  cost_matrix_.resize(size, size);
+  auto start_dist = dist_map_.begin();
+  viewpoint_positions_ = std::vector<octomap::point3d>(0);
+  isAccesible_ = std::vector<bool>(0);
+  std::vector<int> idx(1);
+  std::vector<float> dist(1);
+  float vp_weight = 0.7;
+  float dir_weight = 4.0;
+  octomap::point3d start_position = dist_map_[START_ID].frontier->viewpoints_[0].position;
+
+  for (int i=0; i<size; i++)
+  {
+    auto value = std::next(start_dist, i)->second;
+    octomap::point3d position = value.frontier->viewpoints_[0].position;
+    viewpoint_positions_.push_back(position);
+    isAccesible_.push_back(value.isAccesible);
+    auto start_neighbors = value.distances.begin();
+    
+
+    for (int j=0; j<size; j++)
+    {
+      auto it_j = std::next(start_neighbors, j);
+      cost_matrix_(i,j) = it_j->second;
+    }
+    
+    if (pcset_)
+    {
+      pcl::PointXYZ point = pcl::PointXYZ(position.x(), position.y(), position.z());
+      if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
+        cost_matrix_(0, i) += vp_weight*dist[0];
+    }
+    cost_matrix_(0, i) += dir_weight*std::acos(start_velocity_.normalized().dot((position - start_position).normalized()));
+    cost_matrix_(i, i) = 0.0;
+    cost_matrix_(i, 0) = 0.0; // BIG_DISTANCE/100;
+  }
+  // costmatrixViewpointAdjustment();
+}
+
+void TSPsolver::GlobalParWrite()
+{
+  std::ofstream par_file(GlobalPar_);
+  par_file << "PROBLEM_FILE = " << GlobalProF_ << "\n"; // TIME_LIMIT
+  par_file << "GAIN23 = YES\n";
+  par_file << "TIME_LIMIT = 0.5\n";
+  par_file << "OUTPUT_TOUR_FILE =" << GlobalResult_ << "\n";
+  par_file << "RUNS = " << std::to_string(GlobalRuns_) << "\n";
+  par_file.close();
+}
+
+void TSPsolver::GlobalProblemWrite(Eigen::MatrixXd& costMat)
+{
+  const int dimension = costMat.rows();
+  std::ofstream prob_file(GlobalProF_);
+  std::string prob_spec = "NAME : global\nTYPE : ATSP\nDIMENSION : " + std::to_string(dimension) +
+    "\nEDGE_WEIGHT_TYPE : "
+    "EXPLICIT\nEDGE_WEIGHT_FORMAT : FULL_MATRIX\nEDGE_WEIGHT_SECTION\n";
+  prob_file << prob_spec;
+
+  for (int i=0; i<dimension; ++i)
+  {
+    for (int j=0; j<dimension; ++j)
+    {
+      int int_cost = costMat(i,j)*precision_;
+      prob_file << std::to_string(int_cost) << " ";
+    }
+    prob_file << "\n";
+  }
+
+  prob_file << "EOF";
+  prob_file.close();
+}
+
+std::vector<int> TSPsolver::GlobalResultsRead()
+{
+  std::vector<int> results;
+
+  std::ifstream res_file(GlobalResult_);
+  std::string res;
+  while (getline(res_file, res)) 
+    if (res.compare("TOUR_SECTION") == 0) break;
+  
+  while (getline(res_file, res)) 
+  {
+    int id = std::stoi(res);
+    // if (id == 1)
+    //   continue;
+    if (id == -1) break;
+    results.push_back(id - 1);
+  }
+  res_file.close();
+
+  return results;
+}
+
+std::vector<int> TSPsolver::LKHSolve()
+{
+  /* write par file */
+  GlobalParWrite();
+  /* construct ATSP cost matrix */
+  // Eigen::MatrixXd GloablCostMat;
+  // GloablCostMat = GlobalCostMat(solver_start_, centroids);
+  // constructDistanceMatrix();
+  /* write problem file */
+  GlobalProblemWrite(cost_matrix_);
+  /* ATSP solving */
+  std::string command_ = "cd " + GlobalDir_ + " && ./LKH " + GlobalPar_;
+  const char* charPtr = command_.c_str();
+  int system_back_ = std::system(charPtr);
+  /* read solution results */
+  std::vector<int> result = GlobalResultsRead();
+  return result;
+}
+
+void TSPsolver::costmatrixViewpointAdjustment()
+{
+  ROS_WARN("VP adjustment");
+  if (!pcset_){
+    return;
+  }
+  std::vector<int> idx(1);
+  std::vector<float> dist(1);
+  int i = 0;
+  float weight = 1.0;
+
+  for (auto &el : dist_map_)
+  {
+    auto p =  el.second.frontier->viewpoints_[0].position;
+    pcl::PointXYZ point = pcl::PointXYZ(p.x(), p.y(), p.z());
+    if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
+    {
+      cost_matrix_(0, i) += weight*dist[0];
+    }
+    i++;
+  }
+}
+
+void TSPsolver::setKDtreeInput(pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewpoints)
+{
+  // ROS_ERROR("pc call");
+  if (guiding_viewpoints->size() == 0){
+    return;
+  }
+  ROS_ERROR("pc size %d", guiding_viewpoints->size());
+  tree_->setInputCloud(guiding_viewpoints);
+  pcset_ = true;
+  // ROS_ERROR("pc set");
+}
+
 
 std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse_solution)
 {
@@ -259,85 +451,89 @@ std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse
   return best_solution;
 }
 
-
-double TSPsolver::computeDistance(octomap::point3d a, octomap::point3d b)
+double TSPsolver::computeCost(const Eigen::MatrixXd &cost_matrix, const std::vector<int> &solution)
 {
-  path_info_t path_info = distanceFunciton_(a,b);
-  double weighed_distance;
-  if (path_info.distance == INVALID_DISTANCE)
+  double cost = 0.0;
+  int size = solution.size();
+  double dir_weight = 4.0;
+  double height_weight = 3.0;
+  int zero_position = std::distance(solution.begin(),std::find(solution.begin(), solution.end(), 0));
+  for (int i=0; i<size; i++)
   {
-    weighed_distance = BIG_DISTANCE;
+    int idx0 = i;
+    int idx1 = (i+1)%size;
+    cost += cost_matrix(solution[idx0], solution[idx1]);
+    if (solution[idx0] == 0)
+    {
+      cost += dir_weight*std::acos(start_velocity_.normalized().dot((viewpoint_positions_[idx1] - viewpoint_positions_[idx0]).normalized()));
+      cost += height_weight*std::abs(viewpoint_positions_[idx1].z() - viewpoint_positions_[idx0].z());
+    }
+    else if (solution[idx1] != 0)
+    {
+      int prev_idx = (i-1)%size;
+      int denominator = 10; // (i-zero_position) > 0 ? (i-zero_position) : (i-zero_position+size);
+      cost += (dir_weight/denominator)*std::acos((viewpoint_positions_[idx0] - viewpoint_positions_[prev_idx]).normalized().dot((viewpoint_positions_[idx1] - viewpoint_positions_[idx0]).normalized()));
+      cost += (height_weight/denominator)*std::abs(viewpoint_positions_[idx1].z() - viewpoint_positions_[idx0].z());
+    }
+    
+  }
+  return cost;
+}
+
+std::vector<int> TSPsolver::generateRadnSolution(int n)
+{
+  std::vector<double> temp_solution(0);
+  std::vector<int> solution(0);
+  for (int i = 0; i < n; i++)
+  {
+    temp_solution.push_back(rand());
+    solution.push_back(i);
+  }
+
+  std::sort(solution.begin(), solution.end(), [&temp_solution](int a, int b)
+        {
+          return temp_solution[a] < temp_solution[b];
+        });
+
+  return solution; 
+}
+
+
+std::vector<int> TSPsolver::generateGreedySolution(int n, const Eigen::MatrixXd &cost_matrix, bool zero_start)
+{
+  std::vector<int> solution(0);
+
+  if (zero_start)
+  {
+    solution.push_back(0);
   }
   else
   {
-    weighed_distance = path_info.distance + path_info.velocity_delta + 2*path_info.height;
+    solution.push_back((int)std::floor(getRand()*n*0.999999));
   }
-  return weighed_distance;
-}
 
-
-void TSPsolver::removeFrontiers(std::vector<octomap::point3d> removed_positions)
-{
-  for (auto &position : removed_positions)
+  for (int i = 1; i < n; i++)
   {
-    int size = viewpoint_position_.size();
-    int idx = std::distance(viewpoint_position_.begin(), std::find(viewpoint_position_.begin(), viewpoint_position_.end(), position));
-    if (idx==0){
+    if (!isAccesible_[i]){
       continue;
     }
-    if (idx==std::distance(viewpoint_position_.begin(), viewpoint_position_.end())){
-      continue;
-    }
-    int n = cost_matrix_.cols();
-    if (idx < n){
-      cost_matrix_.block(idx, 0, n-1-idx, n) = cost_matrix_.block(idx+1, 0, n-1-idx, n);
-      cost_matrix_.block(0, idx, n, n-1-idx) = cost_matrix_.block(0, idx+1, n, n-1-idx);
-      
-    }
-    viewpoint_position_.erase(viewpoint_position_.begin() + idx);
-  }
-}
-  
-void TSPsolver::addFrontiers(std::vector<octomap::point3d> added_positions)
-{
-  int dist_comp_cnt = 0;
-  int size = viewpoint_position_.size();
-  if (cost_matrix_.cols() < size+added_positions.size())
-  {
-    cost_matrix_.conservativeResize((size+added_positions.size())*2, (size+added_positions.size())*2);
-  }
-  for (auto &viewpoint : added_positions)
-  {
-    size = viewpoint_position_.size();
-    for (int i=0; i<size; i++)
+    auto row       = cost_matrix.row(solution.back());
+    double min_val = std::numeric_limits<double>::max();
+    int best_neighbor;
+    for (int j=0; j<n; j++)
     {
-      dist_comp_cnt++;
-      double dist = computeDistance(viewpoint , viewpoint_position_[i]);
-      cost_matrix_(i, size) = dist;
-      cost_matrix_(size, i) = dist;
+      if (std::find(solution.begin(), solution.end(), j) == solution.end()) 
+      {
+        if (row(j) < min_val)
+        {
+          min_val = row(j);
+          best_neighbor = j;
+        }
+      }
     }
-    cost_matrix_(size, size) = BIG_DISTANCE;
-    viewpoint_position_.push_back(viewpoint );
+    solution.push_back(best_neighbor); // std::distance(row.begin, min_itr));
   }
+  return solution;
 }
-
-void TSPsolver::setStart(octomap::point3d position)
-{
-  start_position_ = position;
-  isAccesible_ = std::vector<bool>(viewpoint_position_.size(), true);
-  for (int i=1; i<viewpoint_position_.size(); i++)
-  {
-    double dist = computeDistance(start_position_, viewpoint_position_[i]);
-    cost_matrix_(i, 0) = BIG_DISTANCE/100;
-    cost_matrix_(0, i) = dist;
-    if (dist == BIG_DISTANCE){
-      isAccesible_[i] = false;
-    }
-  }
-  cost_matrix_(0,0) = BIG_DISTANCE;
-  viewpoint_position_[0] = start_position_;
-}
-
-
 
 }

@@ -1,5 +1,5 @@
 planning_tree:
-  resolution: 0.4
+  resolution: 0.2
 
 distance_transform:
   submap_distance: 20.0 # [m] from the UAV into all directions

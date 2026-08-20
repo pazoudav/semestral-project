@@ -22,6 +22,12 @@
 #include <mrs_octomap_tools/octomap_methods.h>
 #include <octomap/octomap.h>
 #include <octomap_msgs/Octomap.h>
+#include <visualization_msgs/Marker.h>
+#include <visualization_msgs/MarkerArray.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/common/transforms.h>
+// #include <tf2_eigen/tf2_eigen.h>
 
 #include <unordered_set>
 #include <vector>
@@ -29,6 +35,7 @@
 #include <iostream>
 #include <memory>
 #include <bits/stdc++.h>
+#include <set>
 
 #include "frontier_manager.hpp"
 #include "utils.hpp"
@@ -47,6 +54,13 @@ typedef enum
   
 } State_t;
 
+
+struct trans_cost_t
+{
+  Eigen::Matrix4f matrix;
+  Eigen::Matrix4f matrix_inv;
+  float cost;
+};
 
 
 const std::string _state_names_[] = {"IDLE", "MAP_UPDATED", "FRONTIERS_UPDATED", "PRM_UPDATED", "TSP_UPDATED", "WAITING", "FLYING"};
@@ -71,6 +85,8 @@ namespace mrs_octomap_planner
 
     // params
     double _flight_zone_width_;
+    double _flight_zone_width_x_;
+    double _flight_zone_width_y_;
     double _flight_zone_height_;
     double _flight_zone_floor_;
     double _local_zone_width_;
@@ -115,6 +131,12 @@ namespace mrs_octomap_planner
     TSPsolver tsp_solver_;
     octomap::point3d current_viewpoint_;
 
+    pcl::PointCloud<pcl::PointXYZ>::Ptr  source_cloud_;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr  target_cloud_;
+    std::vector<geometry_msgs::Point> og_skeleton_msg_;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr  source_viewpoint_candidates_;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_viewpoint_candidates_;
     
 
     std::mutex                                mutex_octree_;
@@ -141,14 +163,26 @@ namespace mrs_octomap_planner
     // std::atomic<bool> valid_path_;
     octomap::point3d position_before_map_update_;
     octomap::point3d goal_;
+    octomap::point3d next_goal_;
+    std::shared_ptr<OcTree_t> big_tree_;
+    pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr skeleton_kdtree_;
+    std::vector<trans_cost_t> tranfomation_history_;
+
 
     // subscribers
     mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand> sh_tracker_cmd_;
     mrs_lib::SubscribeHandler<octomap_msgs::Octomap>    sh_octomap_;
     mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics> sh_control_manager_diag_;
+    mrs_lib::SubscribeHandler<visualization_msgs::Marker> sh_source_skeleton;
+    mrs_lib::SubscribeHandler<visualization_msgs::Marker> sh_target_skeleton;
+    mrs_lib::SubscribeHandler<visualization_msgs::MarkerArray> sh_source_viewpoints;
 
     // publishers
     ros::Publisher pub_reference_;
+    ros::Publisher pub_transfomed_skeleton_;
+    ros::Publisher pub_ransac_skeleton_;
+    ros::Publisher pub_big_ocotmap_;
+    ros::Publisher pub_candidate_viewpoints_;
     mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>             sc_get_trajectory_;
     mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv> sc_trajectory_reference_;
 
@@ -164,6 +198,10 @@ namespace mrs_octomap_planner
     // subscriber callbacks
     void callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg);
     void controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg);
+    void sourceSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg);
+    void targetSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg);
+    void sourceViewpointsCallback(const visualization_msgs::MarkerArray::ConstPtr msg);
+
 
     // service servers
     ros::ServiceServer service_server_get_path_;
@@ -185,6 +223,7 @@ namespace mrs_octomap_planner
     void       timerPRMupdate([[maybe_unused]] const ros::TimerEvent& evt);
     ros::Timer timer_path_;
     void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
+    // void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
 
     
 
@@ -198,8 +237,15 @@ namespace mrs_octomap_planner
     bool                                                              makeTrajectory();
     bool                                                              setPath(std::vector<octomap::point3d> path);
     bool                                                              checkTrajectoryCollision();
-
     
+    
+    void  loadSkeleton(const visualization_msgs::Marker::ConstPtr msg, pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud);
+    Eigen::Matrix4f runRANSAC(pcl::PointCloud<pcl::PointXYZ>::Ptr cs,
+                              pcl::PointCloud<pcl::PointXYZ>::Ptr ct,
+                              const std::vector<std::vector<int>>& candidates,
+                              int iterations);
+    Eigen::Matrix4f estimateTransform(const std::vector<Eigen::Vector3f>& src,
+                                      const std::vector<Eigen::Vector3f>& tgt);
 
   };
 
@@ -215,8 +261,9 @@ namespace mrs_octomap_planner
 
     param_loader.loadParam("uav_name", _uav_name_);
 
-    param_loader.loadParam("zone/global/width",_flight_zone_width_);
-    param_loader.loadParam("zone/global/height",_flight_zone_height_);
+    param_loader.loadParam("zone_x",_flight_zone_width_x_);
+    param_loader.loadParam("zone_y",_flight_zone_width_y_);
+    param_loader.loadParam("zone_z",_flight_zone_height_);
     param_loader.loadParam("zone/global/floor",_flight_zone_floor_);
     param_loader.loadParam("zone/local/width",_local_zone_width_);
     param_loader.loadParam("zone/local/height",_local_zone_height_);
@@ -280,14 +327,21 @@ namespace mrs_octomap_planner
     sh_octomap_ = mrs_lib::SubscribeHandler<octomap_msgs::Octomap>(shopts, "octomap_in", ros::Duration(5.0),
                                                                    &Explorer::timeoutOctomap,  this,
                                                                    &Explorer::callbackOctomap, this);
-    sh_control_manager_diag_ = mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>(shopts, "diagnostics_in", &Explorer::controlManagerDiagCallback, this);
-
+    sh_control_manager_diag_  = mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>(shopts, "diagnostics_in", &Explorer::controlManagerDiagCallback, this);
+    sh_source_skeleton        = mrs_lib::SubscribeHandler<visualization_msgs::Marker>(shopts, "source_skeleton_in", &Explorer::sourceSkeletonCallback, this);
+    sh_target_skeleton        = mrs_lib::SubscribeHandler<visualization_msgs::Marker>(shopts, "target_skeleton_in", &Explorer::targetSkeletonCallback, this);  
+    sh_source_viewpoints      = mrs_lib::SubscribeHandler<visualization_msgs::MarkerArray>(shopts, "source_viewpoints_in", &Explorer::sourceViewpointsCallback, this);
 
     service_server_get_path_ = nh_.advertiseService("get_path_in", &Explorer::callbackGetPath, this);
     service_server_explore_= nh_.advertiseService("explore_in", &Explorer::callbackExplore, this);
 
 
-    pub_reference_           = nh_.advertise<mrs_msgs::ReferenceStamped>("reference_out", 1);
+    pub_reference_            = nh_.advertise<mrs_msgs::ReferenceStamped>("reference_out", 1);
+    pub_transfomed_skeleton_  = nh_.advertise<visualization_msgs::Marker>("transformed_skeleton_out", 1);
+    pub_ransac_skeleton_      = nh_.advertise<visualization_msgs::Marker>("ransac_skeleton_out", 1);  
+    pub_big_ocotmap_          = nh_.advertise<visualization_msgs::MarkerArray>("big_octomap_out", 1);  
+    pub_candidate_viewpoints_ = nh_.advertise<sensor_msgs::PointCloud2>("candidate_viewpoints_out", 1);
+
     sc_get_trajectory_       = mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>(nh_, "trajectory_generation_out");
     sc_trajectory_reference_ = mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv>(nh_, "trajectory_reference_out");
 
@@ -337,8 +391,8 @@ namespace mrs_octomap_planner
                                               _max_neighbors_,
                                               _min_neighbor_distance_,
                                               _max_neighbor_distance_);
-    flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_/2.0, -_flight_zone_width_/2.0, _flight_zone_floor_), 
-                    .max=octomap::point3d( _flight_zone_width_/2.0 , _flight_zone_width_/2.0, _flight_zone_floor_+_flight_zone_height_)};
+    flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_x_/2.0, -_flight_zone_width_y_/2.0, _flight_zone_floor_), 
+                    .max=octomap::point3d( _flight_zone_width_x_/2.0 , _flight_zone_width_y_/2.0, _flight_zone_floor_+_flight_zone_height_)};
 
     auto distace_func = bind(&PRM::extraDistance, prm_manager_.get(), std::placeholders::_1, std::placeholders::_2);
     tsp_solver_ = TSPsolver(_max_tsp_duration_, distace_func); 
@@ -348,6 +402,11 @@ namespace mrs_octomap_planner
     tsp_ready_ = false;
     first_path_planend_ = false;
     braking_ = false;
+    source_cloud_        = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();
+    target_cloud_        = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();
+    skeleton_kdtree_     = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>(); // pcl::KdTreeFLANN<pcl::PointXYZ>
+    source_viewpoint_candidates_ = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();
+    tranfomation_history_ = std::vector<trans_cost_t>(0);;
     
     is_initialized_ = true;
     bv_map_frame_set_ = false;
@@ -366,27 +425,17 @@ namespace mrs_octomap_planner
 
     if (state_ == STATE_MAP_UPDATED)
     {
-      bool frontiers_found = getFrontiers();
-
-      if (!frontiers_found)
-      {
-        ROS_WARN("[MrsExplorer]: frontiers were not found");
-        return;
-      }
-      ROS_INFO("[MrsExplorer]: new frontiers succesfuly found");
-      bv_frontiers_->publish();
-      bv_frontiers_->clearBuffers();
-      changeState(STATE_FRONTIERS_UPDATED);
-    }
-    if (state_ == STATE_PRM_UPDATED){
       {
         std::scoped_lock lock(mutex_TSP_, mutex_PRM_, mutex_frontiers_);
-        tsp_solver_.removeFrontiers(frontier_manager_->removed_frontiers_);
-        tsp_solver_.addFrontiers(frontier_manager_->added_frontiers_);
+        tsp_solver_.removeFrontiers();
+        tsp_solver_.addFrontiers(frontier_manager_->fis_c_);
       }
       tsp_ready_  = true;
-      changeState(STATE_WAITING);
+      changeState(STATE_FRONTIERS_UPDATED);
     }
+
+    // ROS_WARN("main runnig");
+
   }
 
 
@@ -423,10 +472,13 @@ namespace mrs_octomap_planner
         prm_manager_->addNode(viewpoint_position);
       }
       prm_manager_->updateZone(tree, local_zone, true);
-      changeState(STATE_PRM_UPDATED);
+      // ROS_ERROR("PRM UPDATE --------------------------------------------------------");
+
+      changeState(STATE_WAITING);
     }
     else
     {
+      // ROS_ERROR("PRM UPDATE ========================================================");
       std::scoped_lock lock(mutex_PRM_);
       prm_manager_->updateZone(tree, local_zone, false);
     }
@@ -522,8 +574,14 @@ namespace mrs_octomap_planner
     }
 
     map_ready_  = true;
-    // map_update_ = true;
+    getFrontiers();
+    map_update_ = true;
+    
     changeState(STATE_MAP_UPDATED);
+    ROS_INFO("[MrsExplorer]: new frontiers succesfuly found");
+    
+    bv_frontiers_->publish();
+    bv_frontiers_->clearBuffers();
     
   }
 
@@ -588,6 +646,11 @@ bool Explorer::makePath()
   }
   auto pos = res_position.value().reference.position;
   octomap::point3d start_coord(pos.x, pos.y, pos.z);
+
+  // if ((start_coord -octomap::point3d(0.0,0.0,0.0)).norm()<0.01){
+  //     ROS_ERROR("invalid drone position");
+  //     return false;
+  // }
   
   // extract tracker predition
   auto res_prediction = getFullStatePrediction();
@@ -620,17 +683,19 @@ bool Explorer::makePath()
       braking_ = true;
       return true;
     }
-    // else if (isFreeSpace(octomap::point3d(point.x,point.y,point.z), _free_space_dia_, tree));
-    // {
-    //   last_free_point = octomap::point3d(point.x,point.y,point.z);
-    // }
+    else // if (isFreeSpace(octomap::point3d(point.x,point.y,point.z), _free_space_dia_, tree));
+    {
+      last_free_point_ = octomap::point3d(point.x,point.y,point.z);
+    }
   }
   if (!first_path_planend_){
     goal_ = start_coord;
+    next_goal_ = goal_;
+    // ros::Duration(5.0).sleep();
   }
   // if is in collision recalculate path, otherwise check if drone is near end of the path and replan, othervise do nothing 
   geometry_msgs::Point p = prediction.position.back();
-  if (start_coord.distance(goal_) > _replanning_distance_) // octomap::point3d(p.x,p.y,p.z)
+  if (start_coord.distance(goal_) > _replanning_distance_ && start_coord.distance(next_goal_) > _replanning_distance_) // octomap::point3d(p.x,p.y,p.z)
   {
     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, too far from goal %f", start_coord.distance(octomap::point3d(p.x,p.y,p.z)));
     return false;
@@ -642,9 +707,8 @@ bool Explorer::makePath()
   
   std::vector<octomap::point3d> glob_path;
   {
-    ROS_ERROR("TSP solve ");
+    ROS_ERROR("TSP solve start");
     std::scoped_lock lock(mutex_TSP_);
-    
     {
       std::scoped_lock lock(mutex_PRM_);
       tsp_solver_.setStart(current_viewpoint_);
@@ -674,18 +738,27 @@ bool Explorer::makePath()
   // add only path to first viewpoint to make into trajectory later
   std::vector<octomap::point3d> path(0);
   int i = 0;
+  int j = 0;
   double path_distance = 0.0;
   // while((path.size() == 0 && i < glob_path.size()) || start_coord.distance(path.back()) < _skip_path_point_distance_)
-  while(path_distance < 4.0 && i < glob_path.size()-1)
+  std::vector<octomap::point3d> sub_global_path(0);
+  sub_global_path.push_back(start_coord);
+  path.push_back(start_coord);
+
+  while(sub_global_path.size() <= 3 || path_distance < 4.0)
   {
-    std::vector<octomap::point3d> temp_path(0);
+    while (sub_global_path.back().distance(glob_path[i]) < _skip_path_point_distance_)
     {
-      std::scoped_lock lock(mutex_PRM_);
-      temp_path = prm_manager_->findPath(glob_path[i], glob_path[i+1], i == 0 ? velocity : velocity*0.0);
+      i++;
     }
-    if (temp_path.size() < 2){
-      break;
-      ROS_ERROR("global path too short");
+    path_distance += path_distance + sub_global_path.back().distance(glob_path[i]);
+    sub_global_path.push_back(glob_path[i]);
+
+    auto temp_path = prm_manager_->findPath(sub_global_path[j], sub_global_path[j+1],  j == 0 ? velocity : velocity*0.0);
+    if (temp_path.size() < 2)
+    {
+      ROS_WARN("temp path not found");
+      return false;
     }
     {
       std::scoped_lock lock(mutex_PRM_);
@@ -694,30 +767,24 @@ bool Explorer::makePath()
       temp_path = prm_manager_->simplifyFreeSpacePath(temp_path);
       std::reverse(temp_path.begin(), temp_path.end());
     }
-    if (temp_path.size() < 2){
-      break;
-      ROS_ERROR("global path too short 2");
-    }
-    path_distance += temp_path[0].distance(temp_path[1]);
-    for (int j=1; j< temp_path.size()-1; j++){
-      if (path.size() > 0 && path.back().distance(temp_path[j]) < _skip_path_point_distance_){
-        continue;
+
+    for (auto &p : temp_path)
+    {
+      if (p.distance(path.back()) > _skip_path_point_distance_)
+      {
+        path.push_back(p);
       }
-      path.push_back(temp_path[j]);
-      path_distance += temp_path[j].distance(temp_path[j+1]);
-      // if (path_distance < 3.0){
-      //   goal_ = temp_path[j+1];
-      // }
     }
-    path.push_back(temp_path.back());
-    
-    i++;
+    j++;
   }
+
+  path.erase(path.begin());
   path_ = path;
 
   if (path_.size() > 0)
   {
-    goal_ = glob_path[1]; // path_.back();
+    goal_ = sub_global_path[1]; // path_.back();
+    next_goal_ = path.back();
     first_path_planend_ = true;
     ros::Duration dt = ros::Time::now() - t0;
     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: time to replan %.1fms", dt.toNSec()/1000000.0);
@@ -981,6 +1048,345 @@ if (!is_initialized_){
       // }
 }
 
+void Explorer::sourceViewpointsCallback(const visualization_msgs::MarkerArray::ConstPtr msg) 
+{
+  source_viewpoint_candidates_->clear();
+
+  for (auto &p_ : msg->markers){
+    if (p_.ns != "init_vps_pos" && p_.ns != "text")
+    {
+      continue;
+    }
+    auto p = p_.pose.position;
+    auto scale = p_.scale;
+    double x;
+    double y;
+    double z;
+    if (p_.ns == "init_vps_pos")
+    {
+      x = p.x*1.0/scale.x;
+      y = p.y*1.0/scale.y;
+      z = p.z*1.0/scale.z;
+    } else {
+      x = p.x*scale.x;
+      y = p.y*scale.y;
+      z = p.z*scale.z;
+    }
+    
+
+    ROS_INFO("Viewpoint Point: x=%.2f, y=%.2f, z=%.2f", x, y, z);
+    source_viewpoint_candidates_->push_back(pcl::PointXYZ(x, y, z));
+  }
+}
+
+void Explorer::sourceSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg) 
+{
+
+  loadSkeleton(msg, source_cloud_);
+  // for (auto &p : msg->points){
+  //   double x = p.x;
+  //   double y = p.y;
+  //   double z = p.z;
+
+  //   ROS_INFO("Skeleton Point: x=%.2f, y=%.2f, z=%.2f", x, y, z);
+  // }
+  og_skeleton_msg_ = msg->points;
+  skeleton_kdtree_->setInputCloud(source_cloud_);
+}
+
+void Explorer::targetSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg) 
+{
+
+  if (!is_initialized_){
+      return;
+  }
+
+  loadSkeleton(msg, target_cloud_);
+  std::vector<std::vector<int>> candidates = std::vector<std::vector<int>>(0);
+
+  for (int i = 0; i < source_cloud_->size(); i++){
+    candidates.push_back(std::vector<int>(0));
+    for (int j = 0; j < target_cloud_->size(); j++){
+      candidates[i].push_back(j);
+    }
+  }
+
+  Eigen::Matrix4f T = runRANSAC(source_cloud_, target_cloud_, candidates, 2000);
+
+  // source_viewpoint_candidates_
+  pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_pointcloud(new pcl::PointCloud<pcl::PointXYZ>());
+  pcl::transformPointCloud(*source_viewpoint_candidates_, *transformed_pointcloud, T);
+
+  {
+    std::scoped_lock lock(mutex_TSP_);
+    ROS_ERROR("loading tsp kd tree");
+    tsp_solver_.setKDtreeInput(transformed_pointcloud);
+  }
+
+  sensor_msgs::PointCloud2 output_msg;
+  pcl::toROSMsg(*transformed_pointcloud, output_msg);
+  output_msg.header.frame_id = msg->header.frame_id; // Set frame
+  output_msg.header.stamp = ros::Time::now();
+  pub_candidate_viewpoints_.publish(output_msg);
+
+  // tsp_solver_.guiding_viewpoints_ = transformed_viewpoint_candidates_;
+
+
+  std::vector<geometry_msgs::Point> transformed_points = std::vector<geometry_msgs::Point>(0);
+
+  for (auto &p : og_skeleton_msg_)
+  {
+    Eigen::Vector4f point(p.x, p.y, p.z, 1.0f);
+    Eigen::Vector4f point_trans = T * point;
+
+    geometry_msgs::Point new_point;
+    new_point.x = point_trans(0);
+    new_point.y = point_trans(1);
+    new_point.z = point_trans(2);
+
+    transformed_points.push_back(new_point);
+  }
+
+  // ROS_WARN("SKELETON TRANSFORMED");
+  // ROS_WARN("in message frame id: %s", msg->header.frame_id);
+
+  visualization_msgs::Marker lines;
+  lines.header.frame_id = msg->header.frame_id; //"uav1/world_origin"; 
+  lines.header.stamp = ros::Time::now();
+  lines.id = msg->id;
+  lines.type = visualization_msgs::Marker::LINE_LIST;
+  lines.action = visualization_msgs::Marker::ADD;
+
+  lines.pose.orientation.w = 1.0;
+  lines.scale.x = 0.3;
+
+  lines.color.r = 0.8;
+  lines.color.g = 0.1;
+  lines.color.b = 0.1;
+  lines.color.a = 1.0;
+  
+  lines.points = transformed_points;
+
+  pub_transfomed_skeleton_.publish(lines);
+
+  // ROS_WARN("SKELETON PUBLISHED");
+
+} 
+
+
+void Explorer::loadSkeleton(const visualization_msgs::Marker::ConstPtr msg,  pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud)
+{
+  // ROS_ERROR("SKELETON RECIEVED %d", msg->points.size());
+
+  pointcloud->clear();
+  float sample_size = 0.2;
+
+  for (int i=0; i< msg->points.size(); i+=2)
+  {
+    Eigen::Vector3f p1(msg->points[i].x,   msg->points[i].y,   msg->points[i].z);
+    Eigen::Vector3f p2(msg->points[i+1].x, msg->points[i+1].y, msg->points[i+1].z);
+    Eigen::Vector3f dir = p2-p1;
+
+    if (dir.norm() < sample_size)
+    {
+      Eigen::Vector3f np = p1 + dir/2.0;
+      pointcloud->push_back(pcl::PointXYZ(np.x(), np.y(), np.z()));
+    }
+    else
+    {
+      int div_cnt = (int)((dir.norm())/sample_size)+1;
+
+      for (int i=1; i<=div_cnt; i++)
+      {
+        Eigen::Vector3f np = p1 + ((i/(div_cnt+1)) * dir);
+        pointcloud->push_back(pcl::PointXYZ(np.x(), np.y(), np.z()));
+      }
+    }
+  }
+
+  // ROS_ERROR("NEW CLOUD SIZE %d", pointcloud->points.size());
+}
+
+Eigen::Matrix4f Explorer::runRANSAC(
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cs,
+    pcl::PointCloud<pcl::PointXYZ>::Ptr ct,
+    const std::vector<std::vector<int>>& candidates,
+    int iterations)
+{
+    std::mt19937 rng;
+    std::uniform_int_distribution<> dist(0, cs->size() - 1);
+    Eigen::Matrix4f bestT = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f bestT_inv = Eigen::Matrix4f::Identity();
+
+    float best_score = 100000000.0;
+    float best_scale = 0.0;
+
+    std::vector<int> idx(1);
+    std::vector<float> tree_dist(1);
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_pointcloud(new pcl::PointCloud<pcl::PointXYZ>());
+    
+    for (int it = 0; it < iterations; ++it) {
+        std::vector<Eigen::Vector3f> src, tgt;
+
+        for (int k = 0; k < 3; ++k) {
+            int i = dist(rng);
+            if (candidates[i].empty()) continue;
+
+            int j = candidates[i][rng() % candidates[i].size()];
+            Eigen::Vector3f ps(cs->points[i].x, cs->points[i].y, cs->points[i].z);
+            Eigen::Vector3f pt(ct->points[j].x, ct->points[j].y, ct->points[j].z);
+            src.push_back(ps);
+            tgt.push_back(pt);
+        }
+
+        if (src.size() < 3) continue;
+
+        Eigen::Matrix4f T = estimateTransform(src, tgt);
+
+        float scale = T(0,0);
+        if (scale < 0.1 || scale > 10.0) continue;
+        if (!T.allFinite()) continue;
+
+        // Eigen::Matrix4f inv_T = T.inverse();
+        Eigen::Matrix4f inv_T = Eigen::Matrix4f::Identity();
+        Eigen::Matrix3f R_T   = T.block<3,3>(0,0).transpose();
+        R_T = R_T/scale;
+        inv_T.block<3,3>(0,0) = R_T/scale;
+        inv_T.block<3,1>(0,3) = -R_T * T.block<3,1>(0,3);
+
+        transformed_pointcloud->clear();
+        pcl::transformPointCloud(*ct, *transformed_pointcloud, inv_T);
+        
+        float score = 0; 
+
+        for (const auto& point : transformed_pointcloud->points) {
+          if (skeleton_kdtree_->nearestKSearch(point, 1, idx, tree_dist) > 0)
+          {
+            score += tree_dist[0];
+          }
+        }
+
+        if (score < best_score)
+        {
+          best_score = score;
+          best_scale = scale;
+          bestT = T;
+          bestT_inv = inv_T;
+          // ROS_INFO("scale %f, score %f", scale, score);
+        } 
+    }
+
+    
+
+    if (tranfomation_history_.size() < 10) 
+    {
+      tranfomation_history_.push_back((trans_cost_t){.matrix=bestT, .matrix_inv=bestT_inv, .cost=best_score});
+    }else{
+
+      tranfomation_history_.insert(tranfomation_history_.begin(), (trans_cost_t){.matrix=bestT, .matrix_inv=bestT_inv, .cost=best_score});
+      tranfomation_history_.pop_back();
+    }
+
+    best_score = 1000000000.0;
+    for (auto tc : tranfomation_history_)
+    {
+      transformed_pointcloud->clear();
+      pcl::transformPointCloud(*ct, *transformed_pointcloud, tc.matrix_inv);
+      
+      float score = 0; 
+
+      for (const auto& point : transformed_pointcloud->points) {
+        if (skeleton_kdtree_->nearestKSearch(point, 1, idx, tree_dist) > 0)
+        {
+          score += tree_dist[0];
+        }
+      }
+
+      if (score < best_score)
+      {
+        best_score = score;
+        bestT = tc.matrix;
+      } 
+    }
+
+    ROS_WARN("best score %f", best_score);
+
+    return bestT;
+    
+}
+
+Eigen::Matrix4f Explorer::estimateTransform(
+    const std::vector<Eigen::Vector3f>& src,
+    const std::vector<Eigen::Vector3f>& tgt)
+{
+    const int n = src.size();
+
+    // Compute centroids (only XY matters)
+    Eigen::Vector3f centroid_tgt    = Eigen::Vector3f::Zero();
+    Eigen::Vector3f centroid_src    = Eigen::Vector3f::Zero();
+    
+    for (int i = 0; i < n; ++i) {
+        centroid_tgt   += tgt[i];
+        centroid_src   += src[i];
+    }
+    centroid_tgt /= n;
+    centroid_src /= n;
+
+    // Compute 2x2 covariance matrix
+    Eigen::Matrix2f H = Eigen::Matrix2f::Zero();
+    float var_src = 0.0f;
+    float var_tgt = 0.0f;
+
+    for (int i = 0; i < n; ++i) {
+        Eigen::Vector3f pt    = tgt[i] - centroid_tgt;
+        Eigen::Vector3f ps    = src[i] - centroid_src;
+        
+
+        H += ps.head<2>() * pt.head<2>().transpose();
+        var_src += ps.squaredNorm();
+        var_tgt += pt.squaredNorm();
+    }
+
+    // SVD on 2x2
+    Eigen::JacobiSVD<Eigen::Matrix2f> svd(
+        H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+
+    Eigen::Matrix2f U = svd.matrixU();
+    Eigen::Matrix2f V = svd.matrixV();
+
+    // --- Reflection handling ---
+    Eigen::Matrix2f S = Eigen::Matrix2f::Identity();
+    if ((V * U.transpose()).determinant() < 0) {
+        S(1,1) = -1;
+    }
+
+    Eigen::Matrix2f R2 = V * S * U.transpose();
+
+    float scale = std::sqrt(var_tgt/var_src);
+
+    // Translation in XY
+    Eigen::Vector2f t2 = centroid_tgt.head<2>() - scale * R2 * centroid_src.head<2>();
+
+    // Build full 4x4 transform
+    Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
+
+    // XY rotation + scale
+    T(0,0) = scale * R2(0,0);
+    T(0,1) = scale * R2(0,1);
+    T(1,0) = scale * R2(1,0);
+    T(1,1) = scale * R2(1,1);
+
+    // Z untouched
+    T(2,2) = scale;
+
+    // Translation only in XY
+    T(0,3) = t2(0);
+    T(1,3) = t2(1);
+    T(2,3) = 0.0f;
+
+    return T;
+}
 
 
 bool Explorer::callbackExplore(std_srvs::Trigger::Request& req,

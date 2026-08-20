@@ -10,7 +10,10 @@ namespace mrs_octomap_planner
 
 
 // frontier information structure from FUEL paper
-FIS::FIS(){}
+FIS::FIS(){
+  valid_ = true;
+  removed_ = false;
+}
 
 FIS::FIS(frontier_t cells, unsigned long id){
   id_ = id;
@@ -21,6 +24,8 @@ FIS::FIS(frontier_t cells, unsigned long id){
   bbx_ = {.min=min, .max=max};
   sample_cnt_ = 20;
   viewpoints_ = std::vector<viewpoint_t>(0);
+  valid_ = true;
+  removed_ = false;
   // visible_cells_ = frontier_t(0);
 }
 

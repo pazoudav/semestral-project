@@ -36,7 +36,7 @@ FrontierManager::FrontierManager( const std::shared_ptr<mrs_lib::BatchVisualizer
   resample_probability_ = resample_probability; 
   min_coverage_ = min_coverage;
   
-  fis_c_ = std::vector<std::unique_ptr<FIS>>(0);
+  fis_c_ = std::vector<std::shared_ptr<FIS>>(0);
   frontier_id_ = 1;
 }
 
@@ -50,8 +50,9 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
 
   // if a split cound create a frontier smaller then min, dont split and create the frontier
   if (n/2.0 <= min_frontier_size_){
-    auto fis = std::make_unique<FIS>(frontier, frontier_id_++);
-    fis_c_.push_back(std::move(fis));
+    auto fis = std::make_shared<FIS>(frontier, frontier_id_++);
+    fis_c_.push_back(fis);
+    // ROS_WARN("frontier added %d", fis->id_);
     // added_frontiers_.push_back(fis_c_.back().get());
     return;
   }
@@ -90,8 +91,9 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
   }
   else
   {
-    auto fis = std::make_unique<FIS>(frontier, frontier_id_++);
-    fis_c_.push_back(std::move(fis));
+    auto fis = std::make_shared<FIS>(frontier, frontier_id_++);
+    fis_c_.push_back(fis);
+    // ROS_WARN("frontier added %d", fis->id_);
     // added_frontiers_.push_back(fis_c_.back().get());
     return;
   }
@@ -103,24 +105,36 @@ void FrontierManager::addFrontier(const frontier_t& frontier)
 void FrontierManager::removeFrontiers()
 {
   // ROS_INFO("removing frontier");
+  invalidated_frontiers_ = std::vector<octomap::point3d>(0);
   removed_frontiers_ = std::vector<octomap::point3d>(0);
   AABB new_zone = zone_;
 
   for (int idx=fis_c_.size()-1; idx>=0; idx--)
   {
-    FIS* frontier  = fis_c_[idx].get();
-    if (intersect(frontier->bbx_, zone_))
+    // ROS_INFO("%d", idx);
+    std::shared_ptr<FIS> frontier = fis_c_[idx];
+    // ROS_INFO("id %d", frontier->id_);
+    if (intersect(frontier->bbx_, zone_) && frontier->valid_)
     {
       bool is_frontier = isStillFrontier(frontier->cells_);
       if (!is_frontier)
       {
-        if (frontier->viewpoints_.size() > 0){
-          removed_frontiers_.push_back(frontier->viewpoints_[0].position);
-        }
+        // if (frontier->viewpoints_.size() > 0){
+        invalidated_frontiers_.push_back(octomap::point3d(0,0,0));
+        // }
+        frontier->valid_ = false;
+        // ROS_WARN("frontier made %d invalid", frontier->id_);
         // increaese the search zone
         new_zone = makeUnion(new_zone, frontier->bbx_);
-        fis_c_.erase(std::next(fis_c_.begin(),idx));
+        // fis_c_.erase(std::next(fis_c_.begin(),idx));
       }
+    }
+    if (frontier->removed_)
+    {
+      // ROS_ERROR("removed frontier %d from vec size %d", frontier->id_, fis_c_.size());
+      fis_c_.erase(fis_c_.begin()+ idx);
+      removed_frontiers_.push_back(octomap::point3d(0,0,0));
+      // ROS_ERROR("new vec size %d ",  fis_c_.size());
     }
   }
   // set the increaesed search zone
@@ -129,7 +143,7 @@ void FrontierManager::removeFrontiers()
   // marks the cells of remaining frontiers in the zone so that they are not searched agian
   for (auto& frontier : fis_c_)
   {
-    if (intersect(frontier->bbx_, zone_))
+    if (intersect(frontier->bbx_, zone_) && frontier->valid_)
     {
       for (auto &cell : frontier->cells_)
       {
@@ -141,6 +155,7 @@ void FrontierManager::removeFrontiers()
       }
     }
   }  
+  // ROS_INFO("frontier removed");
   return;
 }
 
@@ -219,8 +234,43 @@ void FrontierManager::setZone(AABB zone)
   return;
 }
 
+int FrontierManager::viewpointCoverage(octomap::point3d viewpoint_pos, const frontier_t& frontier_cells)
+{
+  int coverage = 0;
+
+  // check how many FR cells are visible from viewpoint
+  for (auto &cell : frontier_cells) // fis->cells_
+  {
+    if (cell.distance(viewpoint_pos) > viewpoint_max_distance_ 
+          || std::abs((cell-viewpoint_pos).normalized().z()) > std::sin(viewpoint_max_angle_)) // 0.7 for 90 degree horizontal fow
+    {
+      continue;
+    }
+    bool isVisible = true;
+    octomap::KeyRay key_ray;
+    tree_->computeRayKeys(viewpoint_pos, cell, key_ray);
+
+    for (octomap::KeyRay::iterator it1 = key_ray.begin(), end = key_ray.end(); it1 != end; ++it1) 
+    {
+      auto node = tree_->search(*it1, tree_->getTreeDepth());
+      if (node && tree_->isNodeOccupied(node)){
+        isVisible = false;
+        break;
+      }
+    }
+    if (isVisible)
+    {
+      // fis->visible_cells_.push_back(cell);
+      coverage += 1;
+    }
+  }
+
+  return coverage;
+}
+
+
 // make viewpoint for a frontier
-void FrontierManager::makeViewpoints(FIS* fis)
+void FrontierManager::makeViewpoints(std::shared_ptr<FIS> fis)
 {
   for (int i=0; i<viewpoint_sample_attempts_; i++)
   {
@@ -237,41 +287,12 @@ void FrontierManager::makeViewpoints(FIS* fis)
     // viewpoint must have free space around
     if (isFreeSpace(viewpoint_pos, free_space_diameter_, tree_))
     {
-      int coverage = 0;
-
-      // check how many FR cells are visible from viewpoint
-      for (auto &cell : fis->cells_)
-      {
-        if (cell.distance(viewpoint_pos) > viewpoint_max_distance_ 
-              || std::abs((cell-viewpoint_pos).normalized().z()) > std::sin(viewpoint_max_angle_)) // 0.7 for 90 degree horizontal fow
-        {
-          continue;
-        }
-        bool isVisible = true;
-        octomap::KeyRay key_ray;
-        tree_->computeRayKeys(viewpoint_pos, cell, key_ray);
-
-        for (octomap::KeyRay::iterator it1 = key_ray.begin(), end = key_ray.end(); it1 != end; ++it1) 
-        {
-          auto node = tree_->search(*it1, tree_->getTreeDepth());
-          if (node && tree_->isNodeOccupied(node)){
-            isVisible = false;
-            break;
-          }
-        }
-        if (isVisible)
-        {
-          // fis->visible_cells_.push_back(cell);
-          coverage += 1;
-        }
-      }
-      
+      int coverage = viewpointCoverage(viewpoint_pos, fis->cells_);
       if (coverage >= min_coverage_)
       {
         viewpoint_t viewpoint = {.position=viewpoint_pos, .coverage=coverage};
         fis->viewpoints_.push_back(viewpoint);
       }
-      
     }
 
     if (fis->viewpoints_.size() >= max_viewpoints_per_fr_) break;
@@ -287,6 +308,7 @@ void FrontierManager::makeViewpoints(FIS* fis)
 void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree, AABB zone, octomap::OcTreeKey start_key)
 {
     // ROS_INFO("processing new map");
+    // ROS_INFO("[MRsExplorer]: starting frontier count: %i", fis_c_.size());
     tree_ = tree;
     setZone(zone);
   
@@ -296,7 +318,7 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     std::queue<octomap::OcTreeKey> qu;
     qu.push(start_key);
 
-    std::vector<frontier_t> all_frontiers(0);
+    std::vector<frontier_t> new_frontiers(0);
 
     while(qu.size() > 0)
     {
@@ -382,7 +404,7 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
               }
             }
             if (frontier_cells.size() >= min_frontier_size_){
-              all_frontiers.push_back(frontier_cells);
+              new_frontiers.push_back(frontier_cells);
             }
         }
         else if (! tree_->isNodeOccupied(n_node))
@@ -396,7 +418,7 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     
     int tmp = fis_c_.size();
     added_frontiers_ = std::vector<octomap::point3d>(0);
-    for (auto& frontier : all_frontiers)
+    for (auto& frontier : new_frontiers)
     { 
       addFrontier(frontier);
     }
@@ -405,28 +427,39 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     int cidx = 0;
     for (auto& fis : fis_c_)
     {
+      if (!fis->valid_) {
+        continue;
+      };
       int viewpoint_cnt = fis->viewpoints_.size();
-      // if (viewpoint_cnt < max_viewpoints_per_fr_)
-      // {
-      //   // if forntier doesnt have enough viewpoint try to search for them
-      //   if (viewpoint_cnt < min_viewpoints_per_fr_)
-      //   {
-      //     makeViewpoints(fis.get());
-      //   }
-      //   // if forntier doesnt have all viewpoint try to search for them with some probability
-      //   else if (getRand()<resample_probability_)
-      //   {
-      //     makeViewpoints(fis.get());
-      //   }
-          
-      // }
-      if (viewpoint_cnt == 0)
+      
+      if (intersect(fis->bbx_, zone_)){
+        if (viewpoint_cnt == 0)
         {
-          makeViewpoints(fis.get());
+          makeViewpoints(fis);
+        } 
+        for (int vidx = fis->viewpoints_.size()-1; vidx >= 0; vidx--)
+        {
+          int new_coverage = viewpointCoverage(fis->viewpoints_[vidx].position, fis->cells_);
+          if (new_coverage < min_coverage_)
+          {
+            fis->viewpoints_.erase(fis->viewpoints_.begin() + vidx);
+          }
+          else
+          {
+            fis->viewpoints_[vidx].coverage = new_coverage;
+          }
         }
-      if (viewpoint_cnt == 0 && fis->viewpoints_.size() > 0){
-        added_frontiers_.push_back(fis->viewpoints_[0].position);
+        std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
       }
+      
+      if (fis->viewpoints_.size() > 0){
+        added_frontiers_.push_back(fis->viewpoints_[0].position);
+      } 
+      else{
+        fis->valid_ = false;
+        continue;
+      }
+      
       viewable_frontier_cnt_ += fis->viewpoints_.size() == 0 ? 0 : 1;
       
       // draw frontiers in different colors
@@ -457,7 +490,7 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
       }
     }
     
-    ROS_INFO("[MRsExplorer]: final frontier count: %i/%i/%i/%i (total/rem/add/0v)", fis_c_.size(), removed_frontiers_.size(), added_frontiers_.size(), viewable_frontier_cnt_);
+    ROS_INFO("[MRsExplorer]: final frontier count: %i/%i/%i/%i (total/inv/rem/add/)", fis_c_.size(), invalidated_frontiers_.size(), removed_frontiers_.size(), added_frontiers_.size(), viewable_frontier_cnt_);
 }
 
 }

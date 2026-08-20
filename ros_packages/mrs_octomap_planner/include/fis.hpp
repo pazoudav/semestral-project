@@ -33,6 +33,8 @@ public:
   ~FIS();
 
   unsigned long id_;
+  bool valid_;
+  bool removed_;
 
   octomap::point3d sampleViewpoint(double r, double h);
   unsigned int cellCnt();

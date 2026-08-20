@@ -1,5 +1,26 @@
 # for point cloud raycasting
 
+resolution: 0.2
+
+# persistency:
+
+#   enabled: false
+
+#   map_name: "default"
+
+#   # save global map every "n" seconds, will be save only when flying_normally == true
+#   # save_time: 10.0 # [s]
+
+#   # automatically aligns altitude after start
+#   align_altitude:
+
+#     enabled: true
+
+#     # ground_detection_distance: 2.0 # [m]
+
+#     # # how high is the fcu fram above the ground when sitting on the ground
+#     # robot_height: 0.3 # [m]
+
 global_map:
 
   size: 120 # [m]

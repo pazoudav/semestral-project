@@ -29,6 +29,8 @@ set(CATKIN_DEPENDENCIES
   std_msgs
   geometry_msgs
   message_generation
+  visualization_msgs
+  sensor_msgs
   )
 
 set(LIBRARIES

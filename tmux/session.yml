@@ -15,7 +15,7 @@ windows:
   - gazebo:
       layout: tiled
       panes:
-        - waitForRos; roslaunch mrs_uav_gazebo_simulation simulation.launch world_name:=forest gui:=false
+        - waitForRos; roslaunch mrs_uav_gazebo_simulation simulation.launch gui:=false world_file:=/home/david/user_ros_workspace/worlds/${WORLD_NAME}.world
         - waitForControl; gz camera -c gzclient_camera -f $UAV_NAME; history -s gz camera -c gzclient_camera -f $UAV_NAME
   - status:
       layout: tiled
@@ -24,11 +24,11 @@ windows:
   - spawn:
       layout: tiled
       panes:
-        - waitForGazebo; rosservice call /mrs_drone_spawner/spawn "1 $UAV_TYPE --pos 0 0 1 0 --enable-rangefinder --enable-ouster model:=OS0-128 use_gpu:=True"
+        - waitForGazebo; rosservice call /mrs_drone_spawner/spawn "1 $UAV_TYPE --pos $SPAWN_POSITION --enable-rangefinder --enable-ground-truth --enable-ouster model:=OS0-128 use_gpu:=True"
   - hw_api:
       layout: tiled
       panes:
-        - waitForTime; roslaunch mrs_uav_px4_api api.launch
+        - waitForTime; roslaunch mrs_uav_px4_api api.launch # custom_config:=./config/hw_api.yaml
   - core:
       layout: tiled
       panes:
@@ -42,10 +42,10 @@ windows:
       panes:
         - waitForHw; roslaunch mrs_octomap_mapping_planning mapplan.launch
           config_octomap_server:=./config/octomap_server.yaml
-          config_octomap_planner:=./config/octomap_planner.yaml
           config_pcl_filter_ouster:=./config/ouster_filter_mapping.yaml
           config_pcl_filter_rs_front:=./config/rs_front_filter.yaml
           config_pcl_filter_rs_down:=./config/rs_down_filter.yaml
+          # config_octomap_planner:=./config/octomap_planner.yaml
   - takeoff:
       layout: tiled
       panes:
@@ -54,8 +54,15 @@ windows:
   - goto:
       layout: tiled
       panes:
-        - 'history -s rosservice call /$UAV_NAME/control_manager/goto \"goal: \[-4.0, 6.0, 2.0, 0.0\]\"'
-        - 'history -s rosservice call /$UAV_NAME/explorer/explore'
+        - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+  - skeleton:
+      layout: tiled
+      panes:
+        - waitForGazebo; cd ~/user_ros_workspace/src/FC-Planner; source devel/setup.bash; roslaunch rosa pylon-34.launch
+        - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker 
+        - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
+        - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        
   - rviz:
       layout: tiled
       panes:

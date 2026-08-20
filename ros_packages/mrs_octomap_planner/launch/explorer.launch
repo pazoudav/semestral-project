@@ -1,6 +1,11 @@
 <launch>
 
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
+
+  <arg name="ZONE_X" default="$(env ZONE_X)" />
+  <arg name="ZONE_Y" default="$(env ZONE_Y)" />
+  <arg name="ZONE_Z" default="$(env ZONE_Z)" />
+
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
   <env name="ROSCONSOLE_CONFIG_FILE" if="$(eval arg('LOGGER_DEBUG'))" value="$(find mrs_octomap_planner)/config/debug_verbosity.yaml" />
@@ -25,14 +30,28 @@
 
       <rosparam file="$(find mrs_octomap_planner)/config/explorer.yaml" command="load" />
 
-      <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" />
+      <!-- <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" /> -->
 
       <param name="uav_name" value="$(arg UAV_NAME)" />
+
+      <param name="zone_x" value="$(arg ZONE_X)" />
+      <param name="zone_y" value="$(arg ZONE_Y)" />
+      <param name="zone_z" value="$(arg ZONE_Z)" />
 
       <!-- topics in -->
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
       <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
+      <remap from="~source_skeleton_in" to="/source_skeleton" />  
+      <remap from="~target_skeleton_in" to="/rosa_vis/rr_lines" />   
+      <remap from="~source_viewpoints_in" to="/source_viewpoints" />
+
+
+      <!-- topics out -->
+      <remap from="~transformed_skeleton_out" to="transformed_skeleton" />  
+      <remap from="~ransac_skeleton_out" to="ransaced_skeleton" />  
+      <remap from="~candidate_viewpoints_out" to="candidate_viewpoints" />  
+      <remap from="~big_octomap_out" to="big_octomap" /> 
 
       <!-- services in -->
 

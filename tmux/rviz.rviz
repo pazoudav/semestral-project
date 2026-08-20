@@ -625,8 +625,166 @@ Visualization Manager:
             {}
           Queue Size: 100
           Value: false
+
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /uav1/big_octomap
+          Name: big_octomap
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+
       Enabled: true
       Name: Octomap
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/Marker
+          Enabled: false
+          Marker Topic: /rosa_vis/le_lines
+          Name: lineextract_lines
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /rosa_vis/rr_lines
+          Name: edges
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /uav1/transformed_skeleton
+          Name: transfomed_skeleton
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Alpha: 0.30000001192092896
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 225.37405395507812
+            Min Value: -1.52587890625e-05
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 0; 255; 0
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: candidate_viewpoints
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.6000000238418579
+          Style: Spheres
+          Topic: /uav1/candidate_viewpoints
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: false
+        - Class: rviz/Marker
+          Enabled: true
+          Marker Topic: /uav1/ransaced_skeleton
+          Name: ransac_skeleton
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /rosa_vis/vertex_ID
+          Name: vertexID
+          Namespaces:
+            vertex_ID: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /rosa_vis/rosa_orientation
+          Name: ROSA_orientation
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /rosa_vis/branches
+          Name: branches
+          Namespaces:
+            "": true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /rosa_vis/branches_dir
+          Name: branches_dir
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/Marker
+          Enabled: false
+          Marker Topic: /rosa_debug/adj
+          Name: sample_rep_adj
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /rosa_vis/input_normal
+          Name: pcloud_normal
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Class: rviz/MarkerArray
+          Enabled: false
+          Marker Topic: /rosa_vis/branches_start_end
+          Name: sub_space_begin_end
+          Namespaces:
+            {}
+          Queue Size: 100
+          Value: false
+        - Alpha: 0.30000001192092896
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 225.37405395507812
+            Min Value: -1.52587890625e-05
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 0; 0
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: false
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: INPUT_PCLOUD
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 3
+          Size (m): 0.6000000238418579
+          Style: Spheres
+          Topic: /rosa_vis/input_cloud
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: true
+          Value: false
+      Enabled: true
+      Name: ROSA
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255

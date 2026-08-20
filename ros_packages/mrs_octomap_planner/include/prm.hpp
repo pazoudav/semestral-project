@@ -11,6 +11,27 @@
 #include <queue>
 #include <functional>
 #include "utils.hpp"
+#include <pcl/point_types.h>
+#include <pcl/register_point_struct.h>
+#include <pcl/kdtree/kdtree_flann.h>
+// #include <pcl/common/transforms.h>
+
+
+// struct PointXYZIDX
+// {
+//   PCL_ADD_POINT4D;                  // quad-word XYZ
+//   uint32_t idx;
+
+//   EIGEN_MAKE_ALIGNED_OPERATOR_NEW   // required for Eigen alignment
+// } EIGEN_ALIGN16;                    // enforce SSE padding
+
+// POINT_CLOUD_REGISTER_POINT_STRUCT(
+//     PointXYZIDX,
+//     (float, x, x)
+//     (float, y, y)
+//     (float, z, z)
+//     (uint32_t, idx, idx)
+// )
 
 namespace mrs_octomap_planner
 {
@@ -21,7 +42,7 @@ struct node_t{
   octomap::point3d position;
   std::vector<std::weak_ptr<node_t>> neighbors;
   unsigned long idx;
-  bool isVievpoint=false;
+  bool isViewpoint=false;
   bool valid = true;
   int age = 0;
 };

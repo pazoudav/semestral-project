@@ -58,15 +58,17 @@ private:
   long keyToClosedIdx(octomap::OcTreeKey start_key);
   void setZone(AABB zone);
   bool canBeProcessed(long key_idx, const std::vector<bool>& closed);
-  void makeViewpoints(FIS* fis);
+  void makeViewpoints(std::shared_ptr<FIS> fis);
+  int  viewpointCoverage(octomap::point3d viewpoint_pos, const frontier_t& frontier_cells);
 
   
     
 public:
-  std::vector<std::unique_ptr<FIS>> fis_c_;
+  std::vector<std::shared_ptr<FIS>> fis_c_;
   int viewable_frontier_cnt_;
-  std::vector<octomap::point3d> removed_frontiers_;
+  std::vector<octomap::point3d> invalidated_frontiers_;
   std::vector<octomap::point3d> added_frontiers_;
+  std::vector<octomap::point3d> removed_frontiers_;
 
   FrontierManager(const std::shared_ptr<mrs_lib::BatchVisualizer>&  bv_frontiers,
                   double                                            free_space_diameter,

@@ -1,8 +1,8 @@
 zone:
   global:
-    width:  30.0
-    height: 10.0
-    floor:  -2.0
+    width:  16.0
+    height: 25.0
+    floor:  -1.0
   local: 
     width:  11.0 
     height: 11.0
@@ -18,25 +18,25 @@ tsp:
   max_duration: 10000000
 
 prm:
-  free_space_diameter: 1.6
+  free_space_diameter: 1.2
   overlap_coefficient: 0.7
   node_max_age: 256
-  max_neighbors: 8
+  max_neighbors: 6
   min_neighbor_distance: 0.4
   max_neighbor_distance: 2.0
-  resample_factor: 0.75
+  resample_factor: 0.95
   init_matrix_size: 32
   max_cost: 1000000.0
 
 frontiers:
   min_size: 8
-  min_svd_eigen_value: 32
+  min_svd_eigen_value: 64
   size_decrease_ratio: 0.95
   viewpoint:
     sample_attempts: 64
-    sample_radius: 2.5
+    sample_radius: 3.5
     sample_height: 2.0
-    max_distance: 4.5
+    max_distance: 3.8
     max_angle: 0.75 # ~= pi/4
     max_count: 8
     min_count: 1

@@ -5,17 +5,18 @@ mrs_uav_managers:
     # loaded state estimator plugins
     state_estimators: [
       # "gps_garmin",
-      "gps_baro",
-      "ground_truth",
+      # "gps_baro",
+      "rtk",
     ]
 
-    initial_state_estimator: "gps_baro" # will be used as the first state estimator
-    agl_height_estimator: "" # only slightly filtered height for checking min height (not used in control feedback) garmin_agl
+    initial_state_estimator: "rtk" # will be used as the first state estimator  gps_baro  ground_truth   passthrough
+    # agl_height_estimator: "" # only slightly filtered height for checking min height (not used in control feedback) garmin_agl
+
+    # # altitude_estimator: "BARO"
 
   uav_manager:
 
     takeoff:
-
       after_takeoff:
         controller: "MpcController"
 
