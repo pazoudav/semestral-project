@@ -176,6 +176,7 @@ namespace mrs_octomap_planner
 
   };
 
+  // nodelet entry point: loads params from explorer.yaml, wires up subscribers/publishers/service clients, starts timer_main_/timer_path_, and sets state_ to STATE_IDLE
   void Explorer::onInit()
   {
     nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
@@ -265,6 +266,7 @@ namespace mrs_octomap_planner
   }
 
 
+  // periodic main-loop timer; currently a no-op placeholder once the map is ready (all real work happens in callbackFrontiers()/timerPath())
   void Explorer::timerMain([[maybe_unused]] const ros::TimerEvent& evt)
   {
     // ROS_ERROR_THROTTLE(1.0, "[MrsExplorer]: MAIN LOOP in '%s' STATE", _state_names_[state_].c_str());
@@ -277,6 +279,7 @@ namespace mrs_octomap_planner
   }
 
 
+  // periodic path-update timer: replans via makePath(), publishes the new path as debug rays on bv_path_, then requests a trajectory via makeTrajectory()
   void Explorer::timerPath([[maybe_unused]] const ros::TimerEvent& evt)
   {
     if (!is_initialized_) 
@@ -330,7 +333,7 @@ namespace mrs_octomap_planner
   }
 
 
-  // processes new global map and extracts new frontiers
+  // converts the incoming octomap message into octree_ (guarded by mutex_octree_), latches the map frame onto bv_path_ once, and marks map_ready_; frontier extraction happens out-of-process in frontier_detection, not here
   void Explorer::callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -374,6 +377,8 @@ namespace mrs_octomap_planner
 
 
 
+// (re)plans the flight path: checks the current MPC prediction for imminent collisions (triggers an emergency brake to last_free_point_ if so), otherwise, once close enough to goal_/next_goal_,
+// calls tsp_solver's ~set_start_out/~solve_out services for a fresh global viewpoint tour and then prm_solver's ~find_simplified_path_out per tour sub-segment to build path_; returns true iff path_ was updated
 bool Explorer::makePath()
 {
   // ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: starting path (re)plannig");
@@ -564,6 +569,7 @@ bool Explorer::makePath()
 }
 
 
+// checks the current MPC prediction against octree_ for imminent collisions; dead code, never called (equivalent logic is inlined directly in makePath())
 bool Explorer::checkTrajectoryCollision()
 {
   // extract tracker predition
@@ -594,7 +600,7 @@ bool Explorer::checkTrajectoryCollision()
 }
   
 
-// make trajectory from found path
+// converts path_ into a trajectory via the trajectory_generation_out (mrs_msgs/GetPathSrv) service, then publishes it fly_now=true via trajectory_reference_out (mrs_msgs/TrajectoryReferenceSrv), incrementing path_id_ as the input_id
 bool  Explorer::makeTrajectory()
 {
   mrs_msgs::GetPathSrv srv_get_path;
@@ -651,6 +657,7 @@ bool  Explorer::makeTrajectory()
   return true;
 }
 
+// returns the tracker's full-state MPC prediction transformed into the octree frame, or nullopt if diagnostics/tracker_cmd are stale (>2s) or the frame transform is unavailable
 std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction()
 {
   const bool got_control_manager_diag = sh_control_manager_diag_.hasMsg() && (ros::Time::now() - sh_control_manager_diag_.lastMsgTime()).toSec() < 2.0;
@@ -676,6 +683,7 @@ std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction
   return prediction;
 }
 
+// current UAV position (in the octree frame), delegating to octomap_planner_utils::getPosition using the tracker_cmd/diagnostics subscribers
 std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void> >> Explorer::getPosition()
 {
   auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
@@ -698,6 +706,7 @@ void Explorer::timeoutOctomap(const std::string& topic, const ros::Time&   last_
 
 
     /* changeState() //{ */
+// logs and sets state_; only ever called with STATE_FRONTIERS_UPDATED (from callbackFrontiers()) — state_ is otherwise not read/branched on anywhere, so this is effectively just a diagnostic label
 void Explorer::changeState(const State_t new_state) {
 
   const State_t old_state = state_;
@@ -707,6 +716,7 @@ void Explorer::changeState(const State_t new_state) {
   state_ = new_state;
 }
 
+// deserializes an octomap_msgs/Octomap (binary or full, per msg->binary) into an OcTree_t; returns nullopt if the message decodes to an empty/null tree
 std::optional<OcTreeSharedPtr_t> Explorer::msgToMap(const octomap_msgs::OctomapConstPtr octomap)
 {
   octomap::AbstractOcTree* abstract_tree;
@@ -751,7 +761,8 @@ ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: position cmd timeouted!");
 }
 
 
-void Explorer::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr diagnostics) 
+// diagnostics_in callback; currently a no-op besides the init guard (only feeds sh_control_manager_diag_'s own freshness checks used elsewhere via hasMsg()/lastMsgTime())
+void Explorer::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr diagnostics)
 {
 
 if (!is_initialized_){
@@ -766,6 +777,7 @@ if (!is_initialized_){
       // }
 }
 
+// service handler for ~explore_in (std_srvs/Trigger); currently unimplemented — just checks init state and reports success, no actual side effects
 bool Explorer::callbackExplore(std_srvs::Trigger::Request& req,
                         std_srvs::Trigger::Response& res)
 {
@@ -781,10 +793,11 @@ bool Explorer::callbackExplore(std_srvs::Trigger::Request& req,
 
 
 
+// service handler for ~get_path_in (mrs_octomap_planner/Path); currently unimplemented — always returns false without populating res
 bool Explorer::callbackGetPath(mrs_octomap_planner::Path::Request&  req,
                                               mrs_octomap_planner::Path::Response& res)
   {
-   
+
     return false;
   }
 

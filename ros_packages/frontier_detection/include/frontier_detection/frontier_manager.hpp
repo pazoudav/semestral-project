@@ -19,6 +19,8 @@ namespace frontier_detection
 {
 
 
+// tracks the set of frontier clusters (FIS) inside a local zone: extracts new frontiers via BFS over the octomap,
+// invalidates/removes stale ones, and samples/scores viewpoints for the remaining ones
 class FrontierManager
 {
 private:
@@ -48,14 +50,23 @@ private:
   int     max_viewpoints_per_fr_;
   int     min_coverage_;
 
+  // drops frontiers that are no longer valid (isStillFrontier), growing the search zone to cover them, and marks cells of surviving frontiers as already-explored
   void removeFrontiers();
+  // adds a frontier cluster as a new FIS, recursively splitting it via SVD first if it is too large/elongated
   void addFrontier(const frontier_t& frontier);
+  // re-checks a previously found frontier against the current map: still valid if enough of its cells are still unknown-adjacent-to-free cells
   bool isStillFrontier(const frontier_t& frontier);
+  // true if the cell is unknown and has at least one free cell among its 6-connected neighbors
   bool isFrontierCell(octomap::point3d cell_pos);
+  // maps an octree key to a flat index into the zone's closed-cell bookkeeping arrays
   long keyToClosedIdx(octomap::OcTreeKey start_key);
+  // sets the active search zone and (re)sizes the closed-cell bookkeeping arrays to cover it
   void setZone(octomap_planner_utils::AABB zone);
+  // true if the flat index is within bounds and not yet marked closed
   bool canBeProcessed(long key_idx, const std::vector<bool>& closed);
+  // samples candidate viewpoints around a frontier, keeping only free-space ones with sufficient coverage, sorted best-first
   void makeViewpoints(std::shared_ptr<FIS> fis);
+  // counts how many of the frontier's cells are within range/FOV and unoccluded (raycast) from the given viewpoint
   int  viewpointCoverage(octomap::point3d viewpoint_pos, const frontier_t& frontier_cells);
 
 
@@ -80,6 +91,7 @@ public:
                   int                                               min_coverage);
   ~FrontierManager();
 
+  // full update pass for a new octomap: removes stale frontiers, BFS-extracts new frontier clusters from the given zone/start cell, and (re)samples their viewpoints
   void processNewMap(const std::shared_ptr<octomap::OcTree>& tree, octomap_planner_utils::AABB region, octomap::OcTreeKey start_key);
 };
 

@@ -200,6 +200,7 @@ long FrontierManager::keyToClosedIdx(octomap::OcTreeKey start_key)
 }
 
 
+// true if the flat index is within bounds and not yet marked closed
 bool FrontierManager::canBeProcessed(long closed_idx, const std::vector<bool>& closed)
 {
   return (closed_idx >= 0 && closed_idx < closed.size() && !closed[closed_idx]);
@@ -219,6 +220,7 @@ void FrontierManager::setZone(octomap_planner_utils::AABB zone)
   return;
 }
 
+// counts how many frontier cells are within max distance/angle of the viewpoint and reachable by an unoccluded ray (raycast through the octree)
 int FrontierManager::viewpointCoverage(octomap::point3d viewpoint_pos, const frontier_t& frontier_cells)
 {
   int coverage = 0;

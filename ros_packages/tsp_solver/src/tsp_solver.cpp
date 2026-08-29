@@ -6,6 +6,7 @@ namespace tsp_solver
 {
   unsigned long START_ID = 0;
 
+  // Initializes the fallback-solver time budget (nanoseconds) and default state: a single dummy start node and a plain Euclidean distance function.
   TSPsolver::TSPsolver(int max_duration)
 {
   duration_ = ros::Duration(0, max_duration);
@@ -25,6 +26,7 @@ TSPsolver::~TSPsolver()
 }
 
 
+// Builds the cost matrix for the current graph/start heading, solves it with LKH, and maps the resulting index tour back to viewpoint positions.
 std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
 {
   ROS_ERROR("start TSP solve");
@@ -45,6 +47,7 @@ std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
 
 
 
+// Straight-line (Euclidean) distance between two points via distanceFunciton_; an invalid/unreachable path is penalized with BIG_DISTANCE.
 double TSPsolver::computeDistance(octomap::point3d a, octomap::point3d b)
 {
   octomap_planner_utils::path_info_t path_info = distanceFunciton_(a,b);
@@ -61,6 +64,7 @@ double TSPsolver::computeDistance(octomap::point3d a, octomap::point3d b)
 }
 
 
+// Keeps dist_map_ in sync with the latest frontier set: removes nodes/distances for frontiers no longer present, then adds a node (and its pairwise Euclidean distances to all existing nodes) for each new frontier's first viewpoint.
 void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr& msg)
 {
   ROS_ERROR("SYNC FRONTIERS TSP");
@@ -121,6 +125,7 @@ void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr&
 
 }
 
+// Replaces the START_ID node with the given position and recomputes its distance to every other node, marking neighbors unreachable (BIG_DISTANCE) as inaccessible.
 void TSPsolver::setStart(octomap::point3d position)
 {
   ROS_ERROR("SET START TSP");
@@ -143,6 +148,7 @@ void TSPsolver::setStart(octomap::point3d position)
 
 }
 
+// Flattens dist_map_ (excluding START_ID's own row bookkeeping) into cost_matrix_/viewpoint_positions_/isAccesible_; adds a heading-change penalty and, if a KD-tree of guiding viewpoints is set, a nearest-guiding-viewpoint distance term to the start node's row.
 void TSPsolver::constructDistanceMatrix()
 {
   int size = dist_map_.size() - 1;
@@ -184,6 +190,7 @@ void TSPsolver::constructDistanceMatrix()
   // costmatrixViewpointAdjustment();
 }
 
+// Writes the LKH .par file: problem/output file paths, GAIN23 heuristic, a 0.5s time limit, and run count.
 void TSPsolver::GlobalParWrite()
 {
   std::ofstream par_file(GlobalPar_);
@@ -195,6 +202,7 @@ void TSPsolver::GlobalParWrite()
   par_file.close();
 }
 
+// Writes costMat as an explicit full-matrix ATSP problem file for LKH; costs are scaled by precision_ and truncated to integers, as LKH requires integer edge weights.
 void TSPsolver::GlobalProblemWrite(Eigen::MatrixXd& costMat)
 {
   const int dimension = costMat.rows();
@@ -218,6 +226,7 @@ void TSPsolver::GlobalProblemWrite(Eigen::MatrixXd& costMat)
   prob_file.close();
 }
 
+// Parses LKH's output tour file (TOUR_SECTION, 1-based node ids terminated by -1) into a 0-based index sequence.
 std::vector<int> TSPsolver::GlobalResultsRead()
 {
   std::vector<int> results;
@@ -240,6 +249,7 @@ std::vector<int> TSPsolver::GlobalResultsRead()
   return results;
 }
 
+// Full LKH invocation: writes the .par and cost-matrix problem files, shells out to the bundled LKH binary via a blocking system() call, then reads back the solved tour.
 std::vector<int> TSPsolver::LKHSolve()
 {
   /* write par file */
@@ -259,6 +269,7 @@ std::vector<int> TSPsolver::LKHSolve()
   return result;
 }
 
+// Adds each node's distance to its nearest KD-tree guiding viewpoint into the start row of the cost matrix; no-op if setKDtreeInput() was never called. Dead code: the only call site is commented out in constructDistanceMatrix().
 void TSPsolver::costmatrixViewpointAdjustment()
 {
   ROS_WARN("VP adjustment");
@@ -282,6 +293,7 @@ void TSPsolver::costmatrixViewpointAdjustment()
   }
 }
 
+// Loads the given point cloud (skeleton-derived guiding viewpoints) into the KD-tree used to bias the cost matrix; ignored if empty.
 void TSPsolver::setKDtreeInput(pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewpoints)
 {
   // ROS_ERROR("pc call");
@@ -295,6 +307,7 @@ void TSPsolver::setKDtreeInput(pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewp
 }
 
 
+// Fallback (non-LKH) solver: greedy nearest-neighbor construction, then randomized 3-opt segment reversals/reinsertions for up to duration_, keeping any improving move; rotates the result so it starts at node 0.
 std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse_solution)
 {
   // int size = cost_matrix.cols();
@@ -426,6 +439,7 @@ std::vector<int> TSPsolver::solve(const Eigen::MatrixXd &cost_matrix, bool reuse
   return best_solution;
 }
 
+// Total cyclic cost of a tour (sum of cost_matrix edges), plus heading-change and height-change penalties weighted more heavily near the start node.
 double TSPsolver::computeCost(const Eigen::MatrixXd &cost_matrix, const std::vector<int> &solution)
 {
   double cost = 0.0;
@@ -455,6 +469,7 @@ double TSPsolver::computeCost(const Eigen::MatrixXd &cost_matrix, const std::vec
   return cost;
 }
 
+// Returns node indices [0, n) shuffled into a random order (used as a random restart / fallback tour).
 std::vector<int> TSPsolver::generateRadnSolution(int n)
 {
   std::vector<double> temp_solution(0);
@@ -474,6 +489,7 @@ std::vector<int> TSPsolver::generateRadnSolution(int n)
 }
 
 
+// Nearest-neighbor construction heuristic: starts at node 0 (or a random node if zero_start is false) and repeatedly appends the cheapest unvisited, accessible node.
 std::vector<int> TSPsolver::generateGreedySolution(int n, const Eigen::MatrixXd &cost_matrix, bool zero_start)
 {
   std::vector<int> solution(0);

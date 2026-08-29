@@ -6,6 +6,8 @@
  * 
  */
 
+// NOTE: unused/leftover code — part of the pmm/ vendored library, not referenced by explorer.cpp and not compiled by CMakeLists.txt
+
 #include "pmm_mg_trajectory3d.hpp"
 
 namespace pmm {

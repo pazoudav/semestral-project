@@ -87,8 +87,11 @@ namespace frontier_detection
       void timeoutOctomap(const std::string& topic, const ros::Time& last_msg);
       void timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg);
 
+      // current UAV reference position in the octomap's frame, derived from tracker command + control-manager diagnostics freshness
       std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> getPosition();
+      // decodes an incoming octomap message (binary or full) into an OcTree, or nullopt if the message is empty
       std::optional<OcTreeSharedPtr_t>                                 msgToMap(const octomap_msgs::OctomapConstPtr octomap);
+      // builds and publishes a FrontierArray with the single best (highest-coverage) viewpoint per valid frontier
       void                                                             publishFrontiers();
   };
 
@@ -180,6 +183,7 @@ namespace frontier_detection
     ROS_INFO("[Detector]: initialized!");
   }
 
+  // on each new octomap: decodes it, locates the UAV, derives a local search zone around it, runs FrontierManager::processNewMap, then publishes viz + frontiers
   void Detector::callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg)
   {
     if (!is_initialized_) {

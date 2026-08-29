@@ -157,6 +157,9 @@ void SkeletonEstimator::onInit()
   // ROS_INFO("[SkeletonEstimator]: woldr frame %s", world_frame_id_);
 }
 
+/* Octomap point-cloud callback (port of ROSA_main::pointCloudCallback): gates
+ * re-entrant calls, z-passthrough filters the cloud, publishes it for debug, then
+ * runs the full Rosa pipeline on it and publishes the resulting skeleton. */
 void SkeletonEstimator::callbackOctomapPoints(const sensor_msgs::PointCloud2::ConstPtr msg)
 {
   if (!is_initialized_ || in_progress_) {
@@ -197,6 +200,7 @@ void SkeletonEstimator::callbackOctomapPoints(const sensor_msgs::PointCloud2::Co
   ROS_INFO("[SkeletonEstimator] octomap processed");
 }
 
+/* Debug publisher: republishes the filtered input cloud (before ROSA processing) as a PointCloud2. */
 void SkeletonEstimator::publishInputCloud(const pcl::PointCloud<pcl::PointXYZ>& cloud)
 {
   // ROS_INFO("[SkeletonEstimator] publishInputCloud");
@@ -212,6 +216,9 @@ void SkeletonEstimator::publishInputCloud(const pcl::PointCloud<pcl::PointXYZ>& 
   // ROS_INFO("[SkeletonEstimator] InputCloud published");
 }
 
+/* Publishes the ROSA result graph: real_vertices as a PointCloud2, per-vertex ID text
+ * markers, and the edge list as a LINE_LIST Marker (the latter is what
+ * mrs_octomap_planner's Explorer consumes as the target skeleton). */
 void SkeletonEstimator::publishSkeleton(const SkeletonGraph& graph)
 {
   // ROS_INFO("[SkeletonEstimator] publishSkeleton");
@@ -282,6 +289,9 @@ void SkeletonEstimator::publishSkeleton(const SkeletonGraph& graph)
   // ROS_INFO("[SkeletonEstimator] Skeleton published");
 }
 
+/* Parses a prerecorded viewpoint MarkerArray (markers namespaced "init_vps_pos"/"text",
+ * whose position needs de-/re-scaling by the marker's own scale to recover world
+ * coordinates) into source_viewpoint_candidates_, used later by targetSkeletonCallback. */
 void SkeletonEstimator::sourceViewpointsCallback(const visualization_msgs::MarkerArray::ConstPtr msg)
 {
   source_viewpoint_candidates_->clear();
@@ -313,6 +323,9 @@ void SkeletonEstimator::sourceViewpointsCallback(const visualization_msgs::Marke
   }
 }
 
+/* Caches the prerecorded "source" skeleton (both as a resampled point cloud for RANSAC
+ * matching and the raw line-segment points for later transform + republish) and
+ * (re)builds the KD-tree used by runRANSAC's scoring. */
 void SkeletonEstimator::sourceSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg)
 {
 
@@ -321,6 +334,9 @@ void SkeletonEstimator::sourceSkeletonCallback(const visualization_msgs::Marker:
   skeleton_kdtree_->setInputCloud(source_cloud_);
 }
 
+/* On a new (live, ROSA-produced) target skeleton: RANSAC-aligns it against the cached
+ * source skeleton, transforms the source's candidate viewpoints and skeleton lines by
+ * the resulting T, and publishes both (candidate_viewpoints_out / transformed_skeleton_out). */
 void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg)
 {
 
@@ -385,6 +401,8 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
 }
 
 
+/* Converts a LINE_LIST Marker's point pairs into a point cloud by resampling each
+ * segment at roughly `sample_size` (0.2 m) spacing, for use as RANSAC correspondence points. */
 void SkeletonEstimator::loadSkeleton(const visualization_msgs::Marker::ConstPtr msg,  pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud)
 {
   pointcloud->clear();
@@ -414,6 +432,12 @@ void SkeletonEstimator::loadSkeleton(const visualization_msgs::Marker::ConstPtr 
   }
 }
 
+/* RANSAC search for the similarity transform T (source cs -> target ct) that best
+ * aligns the two skeletons: repeatedly samples 3 correspondences, fits a candidate
+ * transform via estimateTransform, and scores its inverse by nearest-neighbor
+ * distance of the transformed target against the source KD-tree. Keeps a short
+ * history of recent best transforms (tranfomation_history_) and re-scores across
+ * that history to damp frame-to-frame jitter before returning the overall best T. */
 Eigen::Matrix4f SkeletonEstimator::runRANSAC(
     pcl::PointCloud<pcl::PointXYZ>::Ptr cs,
     pcl::PointCloud<pcl::PointXYZ>::Ptr ct,
@@ -521,6 +545,9 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
 
 }
 
+/* Closed-form similarity transform (uniform scale + rotation about Z + XY translation,
+ * Z left unscaled/untranslated in rotation) mapping `src` points onto `tgt` points via
+ * 2x2 SVD (Kabsch-style, restricted to the XY plane) over the given correspondences. */
 Eigen::Matrix4f SkeletonEstimator::estimateTransform(
     const std::vector<Eigen::Vector3f>& src,
     const std::vector<Eigen::Vector3f>& tgt)

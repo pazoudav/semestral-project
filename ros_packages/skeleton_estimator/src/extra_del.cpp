@@ -5,6 +5,7 @@
 namespace skeleton_estimator
 {
 
+/* Extracts the rows listed in `ind` (0-based indices, one per row) into a new matrix, in that order. */
 Eigen::MatrixXd ExtraDel::rowsExtM(Eigen::MatrixXd ind, Eigen::MatrixXd matrix)
 {
   Eigen::MatrixXd final_matrix(ind.size(), matrix.cols());
@@ -15,6 +16,7 @@ Eigen::MatrixXd ExtraDel::rowsExtM(Eigen::MatrixXd ind, Eigen::MatrixXd matrix)
   return final_matrix;
 }
 
+/* Returns `matrix` with the rows listed in `ind` removed, preserving the relative order of the rest. */
 Eigen::MatrixXd ExtraDel::rowsDelM(Eigen::MatrixXd ind, Eigen::MatrixXd matrix)
 {
   int             num = matrix.rows();
@@ -45,6 +47,7 @@ Eigen::MatrixXd ExtraDel::rowsDelM(Eigen::MatrixXd ind, Eigen::MatrixXd matrix)
   return final_matrix;
 }
 
+/* Returns `matrix` with the columns listed in `ind` removed, preserving the relative order of the rest. */
 Eigen::MatrixXd ExtraDel::colsDelM(Eigen::MatrixXd ind, Eigen::MatrixXd matrix)
 {
   int             num = matrix.rows();

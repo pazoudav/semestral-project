@@ -6,6 +6,8 @@
  * 
  */
 
+// NOTE: unused/leftover code — this pmm/ vendored PMM (piecewise minimum-time trajectory) library is not referenced by explorer.cpp and not compiled by CMakeLists.txt
+
 #pragma once
 
 #include <Eigen/Dense>

@@ -12,11 +12,13 @@
 namespace frontier_detection
 {
 
+// a candidate observation point for a frontier, with how many of the frontier's cells are visible from it
 struct viewpoint_t{
   octomap::point3d position;
   int coverage;
 };
 
+// Frontier Information Structure: one clustered set of frontier cells, its bounding box/center, and its sampled viewpoints
 class FIS
 {
 private:
@@ -32,7 +34,9 @@ public:
   unsigned long id_;
   bool valid_;
 
+  // randomly samples a candidate viewpoint within horizontal radius r and vertical offset h around the frontier's center
   octomap::point3d sampleViewpoint(double r, double h);
+  // number of cells belonging to this frontier
   unsigned int cellCnt();
 
   octomap_planner_utils::AABB bbx_;

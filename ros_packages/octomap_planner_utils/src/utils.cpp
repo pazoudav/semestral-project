@@ -4,6 +4,7 @@
 namespace octomap_planner_utils
 {
 
+// precomputed (currently unused) point set from sampleSpherePoints
 auto SPHERE_POINTS = sampleSpherePoints(128);
 
 
@@ -34,7 +35,6 @@ color_t getColor(int i){
   return COLORS[i%15];
 }
 
-// get a key to adjecent node in octomap
 octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, std::vector<int> neighbour_offset){
   octomap::OcTreeKey new_key;
   new_key.k[0] = key.k[0] + neighbour_offset[0];
@@ -43,7 +43,6 @@ octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, std::vector<int> neig
   return new_key;
 }
 
-// get keys to adjecent (26 neighbors) nodes in octomap
 std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_node_key) {
 
   //Add current node to the closed set
@@ -56,7 +55,6 @@ std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_nod
   return res;
 }
 
-// not used now
 std::vector<octomap::point3d> sampleSpherePoints(int n)
 {
   std::vector<octomap::point3d> points(0);
@@ -109,7 +107,6 @@ float volume(AABB a)
   return  d.x()*d.y()*d.z();
 }
 
-// make AABB form centerpoint and side lenghts
 AABB aabbFromCenter(octomap::point3d c, double x, double y,double z){
   AABB b;
   b.min = octomap::point3d(c.x()-x/2, c.y()-y/2,c.z()-z/2);
@@ -124,7 +121,6 @@ AABB localZoneFromPosition(geometry_msgs::Point position, AABB flight_zone, doub
   return makeIntersection(local_zone, flight_zone);
 }
 
-// make AABB form centerpoint and side lenghts that is above a floor level (not used)
 AABB aabbSmartFromCenter(octomap::point3d c, double x, double y,double z, double floor){
   AABB res = aabbFromCenter(c,x,y,z);
 
@@ -134,7 +130,6 @@ AABB aabbSmartFromCenter(octomap::point3d c, double x, double y,double z, double
   return res;
 }
 
-// make smllest AABB that contains 2 AABB
 AABB makeUnion(AABB a, AABB b)
 {
   octomap::point3d min(std::min(a.min.x(), b.min.x()), std::min(a.min.y(), b.min.y()), std::min(a.min.z(), b.min.z()));
@@ -144,7 +139,6 @@ AABB makeUnion(AABB a, AABB b)
   return u;
 }
 
-// make biggest AABB that is contained by 2 AABB
 AABB makeIntersection(AABB a, AABB b)
 {
   octomap::point3d min(std::max(a.min.x(), b.min.x()), std::max(a.min.y(), b.min.y()), std::max(a.min.z(), b.min.z()));
@@ -154,13 +148,11 @@ AABB makeIntersection(AABB a, AABB b)
   return u;
 }
 
-// is a a subset of b?
 bool isSubset(AABB a, AABB b)
 {
   return isBiggerEq(a.min, b.min) && isSmallerEq(a.max, b.max);
 }
 
-// do a and b intersect
 bool intersect(AABB bbx0, AABB bbx1){
 
   for (auto corner : getConrners(bbx1)){
@@ -188,7 +180,6 @@ bool intersect(AABB bbx0, octomap::point3d p){
   return false;
 }
 
-// get random float between 0-1
 float getRand()
 {
   return static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
@@ -205,7 +196,6 @@ int getRand(int a, int b)
   return (int) std::floor(a + (b-a)*r);
 }
 
-// sample random in point from AABB
 octomap::point3d getSampleFromAABB(AABB a)
 {
   return octomap::point3d(getRand(a.min.x(), a.max.x()),
@@ -213,7 +203,6 @@ octomap::point3d getSampleFromAABB(AABB a)
                           getRand(a.min.z(), a.max.z()));
 }
 
-// is a space in AABB free in teh octotree
 bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree)
 {
   octomap::point3d idx_bound = (zone.max - zone.min)*(1.0/tree->getResolution());
@@ -245,7 +234,6 @@ bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree)
   return true;
 }
 
-// is a sphere with diametr free in the octotree
 bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr<octomap::OcTree>& tree)
 {
   double radius = diameter/2.0;
@@ -284,7 +272,6 @@ bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr
   return true;
 }
 
-// get the UAV's current position (tracker command), transformed into octree_frame
 std::optional<mrs_msgs::ReferenceStamped> getPosition(
     mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>& sh_control_manager_diag,
     mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>&            sh_tracker_cmd,

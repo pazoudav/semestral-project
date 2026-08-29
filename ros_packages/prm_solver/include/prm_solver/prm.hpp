@@ -59,6 +59,7 @@ struct a_start_node_t{
   float f;
 };
 
+// min-heap comparator for the A* open set (lowest f-score first)
 struct customLess
 {
     bool operator()(a_start_node_t a, a_start_node_t b) const { return a.f > b.f; }
@@ -86,9 +87,12 @@ private:
   std::vector<bool> frozen_path_;
 
   // void removeNode(node_t* node);
+  // sweeps nodes marked invalid (dead neighbor refs pruned first), compacting the vector in place
   void removeInvalidNodes();
   // void addNode(octomap::point3d position);
+  // returns nodes within radius r of point, sorted nearest-first
   std::vector<node_t> findCloseNodes(octomap::point3d point, double r);
+  // A* search over the roadmap graph between two existing nodes, straight-line distance heuristic
   path_t findNodePath(node_t start, node_t goal);
 
 
@@ -105,13 +109,21 @@ public:
   PRM();
   ~PRM();
 
+  // inserts a new roadmap node at position (unless too close to an existing one) and wires it to nearby nodes with a clear line-of-free-space between them
   void addNode(octomap::point3d position);
+  // ages/invalidates/removes roadmap nodes inside zone and resamples new ones to keep node density in the zone up to the resample budget; call periodically and on every new map
   void updateZone(const std::shared_ptr<octomap::OcTree>& tree, octomap_planner_utils::AABB zone, bool map_update);
+  // finds nearest roadmap nodes to start/goal and returns an A* path between them (start/goal appended as endpoints); empty if unreachable or goal not in free space
   std::vector<octomap::point3d> findPath(octomap::point3d start, octomap::point3d goal, octomath::Vector3 velocity);
+  // findPath() followed by a forward+reverse simplifyFreeSpacePath() pass to shortcut the roadmap path where free space allows
   std::vector<octomap::point3d> findSimplifiedPath(octomap::point3d start, octomap::point3d goal, octomath::Vector3 velocity);
+  // dead/unused: shortcuts a path wherever consecutive waypoints have an unoccupied raycast between them (line-of-sight only, ignores drone size); not called anywhere
   std::vector<octomap::point3d> simplifyRaycastPath(std::vector<octomap::point3d> path);
+  // shortcuts a path by merging waypoints whenever the straight segment between them stays in free space for the drone's size (free_space_diameter_)
   std::vector<octomap::point3d> simplifyFreeSpacePath(std::vector<octomap::point3d> path);
+  // dead/unused: total length of a simplified findPath() route between start and goal; not called anywhere
   double distance(octomap::point3d start, octomap::point3d goal);
+  // dead/unused: computes path length/height-change/angle-change/velocity-change stats along a simplified findPath() route; not called anywhere
   octomap_planner_utils::path_info_t extraDistance(octomap::point3d start, octomap::point3d goal);
   // void freezePath();
 };

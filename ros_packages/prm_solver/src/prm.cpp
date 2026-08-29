@@ -134,6 +134,7 @@ void PRM::removeInvalidNodes()
 }
 
 
+// inserts a new roadmap node at position and connects it to nearby existing nodes with a clear line of free space, skipping insertion if too close to an existing node
 void PRM::addNode(octomap::point3d position)
 {
 
@@ -327,7 +328,7 @@ std::vector<octomap::point3d> PRM::findSimplifiedPath(octomap::point3d start, oc
 }
 
 
-// simplyfies path only if two nodes can see each other, not if a drine can fly there
+// dead/unused: simplifies path only if two nodes can see each other via raycast (ignores drone size, unlike simplifyFreeSpacePath); not called anywhere
 std::vector<octomap::point3d> PRM::simplifyRaycastPath(std::vector<octomap::point3d> path)
 {
   std::vector<octomap::point3d> simplified_path(0);
@@ -432,6 +433,7 @@ std::vector<octomap::point3d> PRM::simplifyFreeSpacePath(std::vector<octomap::po
 }
 
 
+// dead/unused: total length (meters) of a simplified findPath() route between start and goal; not called anywhere
 double PRM::distance(octomap::point3d start, octomap::point3d goal)
 {
   // return start.distance(goal);
@@ -452,6 +454,7 @@ double PRM::distance(octomap::point3d start, octomap::point3d goal)
   return distance;
 }
 
+// dead/unused: computes distance/height-change/turn-angle/velocity-change stats along a simplified findPath() route; not called anywhere
 octomap_planner_utils::path_info_t PRM::extraDistance(octomap::point3d start, octomap::point3d goal)
 {
   octomap_planner_utils::path_info_t result;

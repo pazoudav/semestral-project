@@ -80,6 +80,8 @@ bool Rosa::run(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int est_num)
   return true;
 }
 
+/* Pipeline step 1: adopts `cloud` as P_.pts_/pts_mat; if params_.ground is set, also
+ * synthesizes and downsamples a flat ground point set below the cloud's min z. */
 void Rosa::pcloudReadOff(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
   P_.pts_     = cloud;
@@ -121,6 +123,7 @@ void Rosa::pcloudReadOff(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
   }
 }
 
+/* Estimates per-point normals for P_.pts_ via PCL's KNN-based NormalEstimation. */
 void Rosa::normalEstimation()
 {
   pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
@@ -136,6 +139,11 @@ void Rosa::normalEstimation()
   P_.normals_ = cloud_normals;
 }
 
+/* Pipeline step 2: recenters/rescales the cloud into a roughly unit-sized frame (saving
+ * centroid_/norm_scale_ for restoreScale()), estimates normals, and voxel-downsamples
+ * (growing the voxel size until under budget) to approximately est_num_ points; also
+ * derives th_mah_/delta_ from the final voxel size, since the original always
+ * overwrites its config-loaded values here before first use. */
 void Rosa::normalize()
 {
   P_.ori_pts_.reset(new pcl::PointCloud<pcl::PointXYZ>);
@@ -219,6 +227,9 @@ void Rosa::normalize()
   }
 }
 
+/* Mahalanobis-like similarity weight between two oriented points: penalizes distance
+ * measured along p1's normal (a cubic falloff within radius r) and normal misalignment
+ * between v1/v2; used to decide whether p2 belongs in p1's ROSA neighborhood. */
 double Rosa::mahalanobisLeth(const pcl::PointXYZ& p1, const pcl::Normal& v1, const pcl::PointXYZ& p2, const pcl::Normal& v2, double r) const
 {
   const double    Fs = 2.0;
@@ -236,6 +247,9 @@ double Rosa::mahalanobisLeth(const pcl::PointXYZ& p1, const pcl::Normal& v1, con
   return k * std::pow(std::max(0.0, vec_dot), 2);
 }
 
+/* Pipeline step 3: for each point, radius-searches within r_range and keeps only the
+ * neighbors whose (symmetrized) mahalanobisLeth weight exceeds th_mah_, populating
+ * P_.neighs (the adjacency used throughout the rest of the pipeline). */
 void Rosa::pcloudAdjMatrixMahalanobis(double r_range)
 {
   P_.neighs.clear();
@@ -271,6 +285,13 @@ void Rosa::pcloudAdjMatrixMahalanobis(double r_range)
   }
 }
 
+/* Pipeline step 4 (dROSA): initializes per-point symmetry normals (vset_), then for
+ * num_drosa iterations re-estimates each point's symmetry normal from its active
+ * (same-cutting-plane) neighborhood and smooths normals over k_KNN surface neighbors
+ * weighted by their variance/confidence. Finally projects each point onto its
+ * symmetry plane via closestProjectionPoint to get an initial ROSA position (pset_),
+ * with points whose projection diverges (poor_idx) snapped to their nearest good
+ * neighbor's position instead. */
 void Rosa::rosaDrosa()
 {
   rosaInitialize(P_.pts_, P_.normals_);
@@ -359,6 +380,11 @@ void Rosa::rosaDrosa()
   }
 }
 
+/* Pipeline step 5 (dcROSA): for num_dcrosa iterations, averages each ROSA point
+ * (pset_) with its P_.neighs adjacency, then locally shrinks it towards the
+ * dominant principal axis found via PCA over its k_KNN nearest pset_ neighbors
+ * (skipped where the PCA confidence ratio is below 0.5), pulling points closer
+ * onto a thin curve/axis. */
 void Rosa::rosaDcrosa()
 {
   for (int n = 0; n < params_.num_dcrosa; ++n) {
@@ -419,6 +445,12 @@ void Rosa::rosaDcrosa()
   }
 }
 
+/* Pipeline step 6: clusters pset_ into discrete skeleton vertices (P_.skelver) by
+ * repeatedly picking the farthest-still-unassigned point and claiming all pset_
+ * points within sample_r of it (P_.corresp maps each pset_ point to its cluster);
+ * builds an adjacency graph (Adj) between clusters from surface-neighbor pairs, then
+ * repeatedly collapses the cheapest edge of any triangle in that graph (merging the
+ * two endpoint vertices) until the graph is triangle-free, producing P_.skeladj. */
 void Rosa::rosaLineextract()
 {
   const int outlier = 2;
@@ -585,6 +617,11 @@ void Rosa::rosaLineextract()
   P_.skeladj = Adj;
 }
 
+/* Pipeline step 7: for each skeleton vertex with >=3 corresponding surface points,
+ * recenters it as a blend (params_.alpha) of closestProjectionPoint and the plain
+ * Euclidean mean of those points; vertices with fewer correspondences are dropped
+ * (along with their adjacency rows/cols), and P_.vertices/edges are rebuilt from the
+ * surviving skeleton graph. */
 void Rosa::rosaRecenter()
 {
   std::vector<int> deleted_vertice_idxs;
@@ -642,6 +679,8 @@ void Rosa::rosaRecenter()
   }
 }
 
+/* Pipeline step 8: undoes normalize()'s centering/scaling, mapping P_.vertices back
+ * into the original point cloud's coordinate frame (P_.vertices_scale). */
 void Rosa::restoreScale()
 {
   Eigen::VectorXd vertex(P_.vertices.cols());
@@ -654,6 +693,8 @@ void Rosa::restoreScale()
   }
 }
 
+/* Pipeline step 9 (final): keeps only the vertices actually referenced by an edge
+ * (P_.real_vertices) — the set that gets published, dropping unreferenced/isolated ones. */
 void Rosa::storeRealGraph()
 {
   std::vector<int> effective_idxs;
@@ -673,6 +714,8 @@ void Rosa::storeRealGraph()
   P_.real_vertices = temp_vertices;
 }
 
+/* Seeds pset_ with the raw point positions and vset_ with an initial symmetry-normal
+ * guess per point (row 1 of an arbitrary orthonormal frame built around its surface normal). */
 void Rosa::rosaInitialize(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const pcl::PointCloud<pcl::Normal>::Ptr& normals)
 {
   int psize = (int)cloud->points.size();
@@ -688,6 +731,8 @@ void Rosa::rosaInitialize(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, cons
   }
 }
 
+/* Marks (isoncut) which of `size` points in `datas` lie within delta_ of the cutting
+ * plane through p_cut with normal v_cut. */
 void Rosa::pcloudIsoncut(const Eigen::Vector3d& p_cut, const Eigen::Vector3d& v_cut, std::vector<int>& isoncut, const double* datas, int size) const
 {
   DataWrapper data;
@@ -697,6 +742,7 @@ void Rosa::pcloudIsoncut(const Eigen::Vector3d& p_cut, const Eigen::Vector3d& v_
   distanceQuery(data, p, n, delta_, isoncut);
 }
 
+/* Flags (in isoncut) every point in `data` whose signed distance to plane (Pp, Np) is within delta. */
 void Rosa::distanceQuery(DataWrapper& data, const std::vector<double>& Pp, const std::vector<double>& Np, double delta, std::vector<int>& isoncut) const
 {
   std::vector<double> P(3);
@@ -708,6 +754,9 @@ void Rosa::distanceQuery(DataWrapper& data, const std::vector<double>& Pp, const
   }
 }
 
+/* Flood-fills from point `idx` across P_.neighs, restricted to points lying on the
+ * same cutting-plane slice through (p_cut, v_cut); returns the connected indices used
+ * to estimate the local symmetry normal / projection point at `idx`. */
 Eigen::MatrixXd Rosa::rosaComputeActiveSamples(int idx, const Eigen::Vector3d& p_cut, const Eigen::Vector3d& v_cut) const
 {
   Eigen::MatrixXd   out_indxs(pcd_size_, 1);
@@ -738,6 +787,8 @@ Eigen::MatrixXd Rosa::rosaComputeActiveSamples(int idx, const Eigen::Vector3d& p
   return out_indxs;
 }
 
+/* Least-variance direction of a local normal set, via a weighted 3x3 covariance
+ * matrix and SVD — the estimated symmetry normal at the corresponding point. */
 Eigen::Vector3d Rosa::computeSymmetrynormal(const Eigen::MatrixXd& local_normals) const
 {
   double alpha = 0.0;
@@ -764,6 +815,8 @@ Eigen::Vector3d Rosa::computeSymmetrynormal(const Eigen::MatrixXd& local_normals
   return U.col(M.cols() - 1);
 }
 
+/* Variance of the local normals' projection onto symm_nor; used as an inverse
+ * confidence weight when smoothing symmetry normals over surface neighbors. */
 double Rosa::symmnormalVariance(const Eigen::Vector3d& symm_nor, const Eigen::MatrixXd& local_normals) const
 {
   int              num = local_normals.rows();
@@ -782,6 +835,8 @@ double Rosa::symmnormalVariance(const Eigen::Vector3d& symm_nor, const Eigen::Ma
   return var;
 }
 
+/* Weighted (by w, e.g. inverse variance) principal-direction fit over a neighborhood
+ * of candidate symmetry normals V — the smoothed symmetry normal for that neighborhood. */
 Eigen::Vector3d Rosa::symmnormalSmooth(const Eigen::MatrixXd& V, const Eigen::MatrixXd& w) const
 {
   double Vxx = (w.cwiseProduct(V.col(0).cwiseAbs2())).sum();
@@ -802,6 +857,9 @@ Eigen::Vector3d Rosa::symmnormalSmooth(const Eigen::MatrixXd& V, const Eigen::Ma
   return U.col(0);
 }
 
+/* Least-squares point closest to the set of lines through points P with directions V
+ * (solves the 3x3 normal-equations system) — the estimated ROSA vertex/position for
+ * that neighborhood; returns a sentinel (1e8,1e8,1e8) if the system is near-singular. */
 Eigen::Vector3d Rosa::closestProjectionPoint(const Eigen::MatrixXd& P, const Eigen::MatrixXd& V) const
 {
   Eigen::VectorXd Lix2 = V.col(0).cwiseAbs2();
@@ -843,6 +901,8 @@ int Rosa::argmaxEigen(const Eigen::MatrixXd& x)
   return (int)max_row;
 }
 
+/* Builds an orthonormal 3x3 frame with (normalized) v as its first row, completing
+ * it via Gram-Schmidt on random vectors for the other two rows. */
 Eigen::Matrix3d Rosa::createOrthonormalFrame(Eigen::Vector3d v) const
 {
   v                     = v / v.norm();

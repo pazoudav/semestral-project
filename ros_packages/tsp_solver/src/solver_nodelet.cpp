@@ -55,6 +55,7 @@ namespace tsp_solver
   };
 
 
+  // Nodelet entry point: loads params, constructs the TSPsolver, and wires up the frontier/candidate-viewpoint subscribers and the set_start/solve services.
   void Solver::onInit()
   {
     ros::Time::waitForValid();
@@ -92,6 +93,7 @@ namespace tsp_solver
     ROS_INFO("[Solver]: initialized!");
   }
 
+  // Forwards each incoming frontier array to TSPsolver::syncFrontiers to keep its internal distance graph up to date.
   void Solver::callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -102,6 +104,7 @@ namespace tsp_solver
     tsp_solver_->syncFrontiers(msg);
   }
 
+  // Would convert the incoming cloud and feed it to TSPsolver::setKDtreeInput, but returns unconditionally right after the init check, so this callback is currently a no-op.
   void Solver::callbackCandidateViewpoints(const sensor_msgs::PointCloud2::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -116,6 +119,7 @@ namespace tsp_solver
     tsp_solver_->setKDtreeInput(cloud);
   }
 
+  // Service handler: sets/updates the TSP graph's start (current UAV position) node via TSPsolver::setStart.
   bool Solver::callbackSetStart(tsp_solver::SetStart::Request&  req,
                                  tsp_solver::SetStart::Response& res)
   {
@@ -130,6 +134,7 @@ namespace tsp_solver
     return true;
   }
 
+  // Service handler: runs TSPsolver::solve for the given start velocity/heading and returns the ordered viewpoint tour as a Point[] path.
   bool Solver::callbackSolve(tsp_solver::Solve::Request&  req,
                               tsp_solver::Solve::Response& res)
   {

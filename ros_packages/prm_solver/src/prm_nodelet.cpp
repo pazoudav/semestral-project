@@ -102,6 +102,7 @@ namespace prm_solver
   };
 
 
+  // nodelet entry point: loads params, sets up subscribers/service/visualizer, and constructs the PRM instance
   void PRMNodelet::onInit()
   {
     ros::Time::waitForValid();
@@ -189,6 +190,7 @@ namespace prm_solver
     ROS_INFO("[PRMNodelet]: initialized!");
   }
 
+  // octomap subscription callback: converts the incoming message to an OcTree and stores it (mutexed) for the update timer to consume
   void PRMNodelet::callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -218,6 +220,7 @@ namespace prm_solver
     ROS_INFO("[PRMNodelet]: octomap processed");
   }
 
+  // periodic timer (timer_rates/update): snapshots the current octree, computes the local zone around the UAV, and calls PRM::updateZone on it, then republishes the roadmap visualization
   void PRMNodelet::timerUpdate([[maybe_unused]] const ros::TimerEvent& evt)
   {
     if (!is_initialized_) {
@@ -256,6 +259,7 @@ namespace prm_solver
     ROS_INFO("[PRMNodelet]: timer end");
   }
 
+  // frontiers subscription callback: for every frontier in the message (not just newly-added ones), calls PRM::addNode on its first viewpoint, adding/deduplicating a roadmap node there
   void PRMNodelet::callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -276,6 +280,7 @@ namespace prm_solver
     ROS_INFO("[PRMNodelet]: frontiers processed");
   }
 
+  // ~find_simplified_path_in service handler, the package's only externally-callable entry point: wraps PRM::findSimplifiedPath between req.start/req.goal and returns the flyable path (res.success false/path empty if none found)
   bool PRMNodelet::callbackFindSimplifiedPath(prm_solver::FindSimplifiedPath::Request&  req,
                                                prm_solver::FindSimplifiedPath::Response& res)
   {
@@ -315,6 +320,7 @@ namespace prm_solver
     // only used for freshness checks via the SubscribeHandler, see getPosition()
   }
 
+  // SubscribeHandler timeout callback for octomap_in: logs a throttled warning if a message was previously received but has since gone stale
   void PRMNodelet::timeoutOctomap(const std::string& topic, const ros::Time& last_msg)
   {
     if (!is_initialized_ || !sh_octomap_.hasMsg()) {
@@ -323,6 +329,7 @@ namespace prm_solver
     ROS_WARN_THROTTLE(1.0, "[PRMNodelet]: octomap timeout!");
   }
 
+  // SubscribeHandler timeout callback for tracker_cmd_in: logs a throttled warning if a message was previously received but has since gone stale
   void PRMNodelet::timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg)
   {
     if (!is_initialized_ || !sh_tracker_cmd_.hasMsg()) {
@@ -331,12 +338,14 @@ namespace prm_solver
     ROS_WARN_THROTTLE(1.0, "[PRMNodelet]: position cmd timeouted!");
   }
 
+  // returns the UAV's current reference position transformed into the octree's frame, or nullopt if unavailable
   std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> PRMNodelet::getPosition()
   {
     auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
     return octomap_planner_utils::getPosition(sh_control_manager_diag_, sh_tracker_cmd_, octree_frame, *transformer_, "[PRMNodelet]");
   }
 
+  // converts an octomap_msgs::Octomap (binary or full) into an OcTree, or nullopt if the message can't be decoded
   std::optional<OcTreeSharedPtr_t> PRMNodelet::msgToMap(const octomap_msgs::OctomapConstPtr octomap)
   {
     octomap::AbstractOcTree* abstract_tree;

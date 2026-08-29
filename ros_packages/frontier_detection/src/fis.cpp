@@ -10,6 +10,7 @@ FIS::FIS(){
   valid_ = true;
 }
 
+// builds a FIS from a set of frontier cells: computes their centroid and bounding box, assigns the given id, starts with no viewpoints
 FIS::FIS(frontier_t cells, unsigned long id){
   id_ = id;
   cells_ = cells;
