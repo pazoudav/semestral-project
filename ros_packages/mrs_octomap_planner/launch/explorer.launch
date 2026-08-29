@@ -2,10 +2,6 @@
 
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
 
-  <arg name="ZONE_X" default="$(env ZONE_X)" />
-  <arg name="ZONE_Y" default="$(env ZONE_Y)" />
-  <arg name="ZONE_Z" default="$(env ZONE_Z)" />
-
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
   <env name="ROSCONSOLE_CONFIG_FILE" if="$(eval arg('LOGGER_DEBUG'))" value="$(find mrs_octomap_planner)/config/debug_verbosity.yaml" />
@@ -34,10 +30,6 @@
 
       <param name="uav_name" value="$(arg UAV_NAME)" />
 
-      <param name="zone_x" value="$(arg ZONE_X)" />
-      <param name="zone_y" value="$(arg ZONE_Y)" />
-      <param name="zone_z" value="$(arg ZONE_Z)" />
-
       <!-- topics in -->
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
       <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
@@ -45,13 +37,14 @@
       <remap from="~source_skeleton_in" to="/source_skeleton" />  
       <remap from="~target_skeleton_in" to="/rosa_vis/rr_lines" />   
       <remap from="~source_viewpoints_in" to="/source_viewpoints" />
+      <remap from="~frontiers_in" to="frontier_detection/frontiers" />
 
 
       <!-- topics out -->
-      <remap from="~transformed_skeleton_out" to="transformed_skeleton" />  
-      <remap from="~ransac_skeleton_out" to="ransaced_skeleton" />  
-      <remap from="~candidate_viewpoints_out" to="candidate_viewpoints" />  
-      <remap from="~big_octomap_out" to="big_octomap" /> 
+      <remap from="~transformed_skeleton_out" to="transformed_skeleton" />
+      <remap from="~ransac_skeleton_out" to="ransaced_skeleton" />
+      <remap from="~candidate_viewpoints_out" to="candidate_viewpoints" />
+      <remap from="~big_octomap_out" to="big_octomap" />
 
       <!-- services in -->
 
@@ -62,6 +55,9 @@
       <remap from="~reference_out" to="control_manager/reference" />
       <remap from="~trajectory_generation_out" to="trajectory_generation/get_path" />
       <remap from="~trajectory_reference_out" to="control_manager/trajectory_reference" />
+      <remap from="~set_start_out" to="tsp_solver/set_start" />
+      <remap from="~solve_out" to="tsp_solver/solve" />
+      <remap from="~find_simplified_path_out" to="prm_solver/find_simplified_path" />
 
     </node>
 

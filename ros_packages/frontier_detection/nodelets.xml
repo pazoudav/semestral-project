@@ -1,0 +1,5 @@
+<library path="lib/libMrsFrontierDetection">
+  <class name="frontier_detection/Detector" type="frontier_detection::Detector" base_class_type="nodelet::Nodelet">
+    <description>MRS pctpmap frontier detection nodelet</description>
+  </class>
+</library>

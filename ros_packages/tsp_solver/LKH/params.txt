@@ -1,0 +1,5 @@
+PROBLEM_FILE = /home/david/user_ros_workspace/src/semestral-project/ros_packages/tsp_solver/LKH/cost_matrix.txt
+GAIN23 = YES
+TIME_LIMIT = 0.5
+OUTPUT_TOUR_FILE =/home/david/user_ros_workspace/src/semestral-project/ros_packages/tsp_solver/LKH/solution.txt
+RUNS = 1

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+
+  <name>octomap_planner_utils</name>
+  <version>1.0.0</version>
+  <description>Shared octomap/AABB/geometry helper library used by mrs_octomap_planner and frontier_detection</description>
+
+  <maintainer email="pazoudav@fel.cvut.cz">David Pazout</maintainer>
+
+  <license>BSD 3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cmake_modules</depend>
+  <depend>roscpp</depend>
+  <depend>octomap_msgs</depend>
+  <depend>octomap_ros</depend>
+  <depend>mrs_lib</depend>
+  <depend>mrs_msgs</depend>
+
+</package>

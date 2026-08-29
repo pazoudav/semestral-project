@@ -37,10 +37,11 @@
 #include <bits/stdc++.h>
 #include <set>
 
-#include "frontier_manager.hpp"
-#include "utils.hpp"
-#include "prm.hpp"
-#include "tsp_solver.hpp"
+#include <octomap_planner_utils/utils.hpp>
+#include <frontier_detection/FrontierArray.h>
+#include <tsp_solver/SetStart.h>
+#include <tsp_solver/Solve.h>
+#include <prm_solver/FindSimplifiedPath.h>
 
 typedef enum
 {
@@ -84,51 +85,19 @@ namespace mrs_octomap_planner
     std::string _uav_name_;
 
     // params
-    double _flight_zone_width_;
-    double _flight_zone_width_x_;
-    double _flight_zone_width_y_;
-    double _flight_zone_height_;
-    double _flight_zone_floor_;
-    double _local_zone_width_;
-    double _local_zone_height_;
     double _replanning_distance_;
     double _flight_free_distance_;
     double _big_distance_;
     double _heading_weight_;
     double _skip_path_point_distance_;
-    int    _max_tsp_duration_;
     double _free_space_dia_;
-    double _ovelap_coefficient_;
-    double _resample_factor_;
-    double _max_cost_;
-    int    _node_max_age_;
-    int    _max_neighbors_;
-    double _min_neighbor_distance_;
-    double _max_neighbor_distance_;
-    int    _init_matrix_size_;
-    int    _frontier_min_size_;
-    int    _min_eigen_;
-    double _size_decrease_ratio_;
-    int    _sample_attemps_;
-    int    _min_viewpoint_cnt_;
-    int    _max_viewpoint_cnt_;
-    int    _min_viewpoint_coverage_;
-    double _viewpoint_sample_radius_;
-    double _viewpoint_sample_height_;
-    double _viewpoint_max_distance_;
-    double _viewpoint_max_angle_;
-    double _viewpoint_resample_probability_;
     double _scale_points_;
     double _scale_lines_;
     double _rate_main_timer_;
-    double _rate_PRM_timer_;
     double _rate_path_timer_;
 
-    AABB flight_zone_;
-    AABB local_zone_;
     std::vector<octomap::point3d> path_;
     int              path_id_ = 0;
-    TSPsolver tsp_solver_;
     octomap::point3d current_viewpoint_;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr  source_cloud_;
@@ -140,15 +109,9 @@ namespace mrs_octomap_planner
     
 
     std::mutex                                mutex_octree_;
-    std::mutex                                mutex_frontiers_;
-    std::mutex                                mutex_local_zone_;
-    std::mutex                                mutex_PRM_;
-    std::mutex                                mutex_TSP_;
     std::shared_ptr<OcTree_t>                 octree_ = nullptr;
     std::string                               octree_frame_;
-    std::shared_ptr<mrs_lib::BatchVisualizer> bv_frontiers_;
     std::shared_ptr<mrs_lib::BatchVisualizer> bv_path_;
-    std::shared_ptr<mrs_lib::BatchVisualizer> bv_prm_;
 
     std::atomic<State_t> state_;
     void                 changeState(const State_t new_state);
@@ -176,6 +139,7 @@ namespace mrs_octomap_planner
     mrs_lib::SubscribeHandler<visualization_msgs::Marker> sh_source_skeleton;
     mrs_lib::SubscribeHandler<visualization_msgs::Marker> sh_target_skeleton;
     mrs_lib::SubscribeHandler<visualization_msgs::MarkerArray> sh_source_viewpoints;
+    mrs_lib::SubscribeHandler<frontier_detection::FrontierArray> sh_frontiers_;
 
     // publishers
     ros::Publisher pub_reference_;
@@ -185,10 +149,9 @@ namespace mrs_octomap_planner
     ros::Publisher pub_candidate_viewpoints_;
     mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>             sc_get_trajectory_;
     mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv> sc_trajectory_reference_;
-
-    // managers
-    std::unique_ptr<FrontierManager>  frontier_manager_;
-    std::unique_ptr<PRM>              prm_manager_;
+    mrs_lib::ServiceClientHandler<tsp_solver::SetStart>             sc_tsp_set_start_;
+    mrs_lib::ServiceClientHandler<tsp_solver::Solve>                sc_tsp_solve_;
+    mrs_lib::ServiceClientHandler<prm_solver::FindSimplifiedPath>   sc_prm_find_simplified_path_;
 
     // timeout callbacks
     void timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg);
@@ -197,6 +160,7 @@ namespace mrs_octomap_planner
 
     // subscriber callbacks
     void callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg);
+    void callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg);
     void controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg);
     void sourceSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg);
     void targetSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg);
@@ -219,8 +183,6 @@ namespace mrs_octomap_planner
     void       timerMain([[maybe_unused]] const ros::TimerEvent& evt);
     // ros::Timer timer_frontiers_;
     // void       timer_frontiers_([[maybe_unused]] const ros::TimerEvent& evt);
-    ros::Timer timer_PRM_update_;
-    void       timerPRMupdate([[maybe_unused]] const ros::TimerEvent& evt);
     ros::Timer timer_path_;
     void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
     // void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
@@ -232,10 +194,8 @@ namespace mrs_octomap_planner
     std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void> >> getPosition();
     std::optional<mrs_msgs::MpcPredictionFullState>                   getFullStatePrediction();
     std::optional<OcTreeSharedPtr_t>                                  msgToMap(const octomap_msgs::OctomapConstPtr octomap);
-    bool                                                              getFrontiers();
     bool                                                              makePath();
     bool                                                              makeTrajectory();
-    bool                                                              setPath(std::vector<octomap::point3d> path);
     bool                                                              checkTrajectoryCollision();
     
     
@@ -261,51 +221,18 @@ namespace mrs_octomap_planner
 
     param_loader.loadParam("uav_name", _uav_name_);
 
-    param_loader.loadParam("zone_x",_flight_zone_width_x_);
-    param_loader.loadParam("zone_y",_flight_zone_width_y_);
-    param_loader.loadParam("zone_z",_flight_zone_height_);
-    param_loader.loadParam("zone/global/floor",_flight_zone_floor_);
-    param_loader.loadParam("zone/local/width",_local_zone_width_);
-    param_loader.loadParam("zone/local/height",_local_zone_height_);
-
-    param_loader.loadParam("planning/replanning_distance",_replanning_distance_); 
-    param_loader.loadParam("planning/flight_free_distance",_flight_free_distance_);  
+    param_loader.loadParam("planning/replanning_distance",_replanning_distance_);
+    param_loader.loadParam("planning/flight_free_distance",_flight_free_distance_);
     param_loader.loadParam("planning/big_distance",_big_distance_);
     param_loader.loadParam("planning/heading_weight",_heading_weight_);
     param_loader.loadParam("planning/skip_path_point_distance",_skip_path_point_distance_);
 
-    param_loader.loadParam("tsp/max_duration",_max_tsp_duration_);
-
     param_loader.loadParam("prm/free_space_diameter",_free_space_dia_);
-    param_loader.loadParam("prm/overlap_coefficient",_ovelap_coefficient_);
-    param_loader.loadParam("prm/resample_factor",_resample_factor_);
-    param_loader.loadParam("prm/max_cost",_max_cost_);
-    param_loader.loadParam("prm/node_max_age",_node_max_age_);
-    param_loader.loadParam("prm/max_neighbors",_max_neighbors_);
-    param_loader.loadParam("prm/min_neighbor_distance",_min_neighbor_distance_);
-    param_loader.loadParam("prm/max_neighbor_distance",_max_neighbor_distance_);
-    param_loader.loadParam("prm/init_matrix_size",_init_matrix_size_);
-
-
-    param_loader.loadParam("frontiers/min_size",_frontier_min_size_);
-    param_loader.loadParam("frontiers/min_svd_eigen_value",_min_eigen_);
-    param_loader.loadParam("frontiers/size_decrease_ratio",_size_decrease_ratio_);
-
-    param_loader.loadParam("frontiers/viewpoint/sample_attempts",_sample_attemps_);
-    param_loader.loadParam("frontiers/viewpoint/min_count",_min_viewpoint_cnt_);
-    param_loader.loadParam("frontiers/viewpoint/max_count",_max_viewpoint_cnt_);
-    param_loader.loadParam("frontiers/viewpoint/min_coverage",_min_viewpoint_coverage_);
-    param_loader.loadParam("frontiers/viewpoint/sample_radius",_viewpoint_sample_radius_);
-    param_loader.loadParam("frontiers/viewpoint/sample_height",_viewpoint_sample_height_);
-    param_loader.loadParam("frontiers/viewpoint/max_distance",_viewpoint_max_distance_);
-    param_loader.loadParam("frontiers/viewpoint/max_angle",_viewpoint_max_angle_);
-    param_loader.loadParam("frontiers/viewpoint/resample_probability",_viewpoint_resample_probability_);
 
     param_loader.loadParam("viz/scale/points", _scale_points_);
     param_loader.loadParam("viz/scale/lines", _scale_lines_);
 
     param_loader.loadParam("timer_rates/main",       _rate_main_timer_);
-    param_loader.loadParam("timer_rates/PRM_update", _rate_PRM_timer_);
     param_loader.loadParam("timer_rates/path",       _rate_path_timer_);
 
 
@@ -331,6 +258,7 @@ namespace mrs_octomap_planner
     sh_source_skeleton        = mrs_lib::SubscribeHandler<visualization_msgs::Marker>(shopts, "source_skeleton_in", &Explorer::sourceSkeletonCallback, this);
     sh_target_skeleton        = mrs_lib::SubscribeHandler<visualization_msgs::Marker>(shopts, "target_skeleton_in", &Explorer::targetSkeletonCallback, this);  
     sh_source_viewpoints      = mrs_lib::SubscribeHandler<visualization_msgs::MarkerArray>(shopts, "source_viewpoints_in", &Explorer::sourceViewpointsCallback, this);
+    sh_frontiers_             = mrs_lib::SubscribeHandler<frontier_detection::FrontierArray>(shopts, "frontiers_in", &Explorer::callbackFrontiers, this);
 
     service_server_get_path_ = nh_.advertiseService("get_path_in", &Explorer::callbackGetPath, this);
     service_server_explore_= nh_.advertiseService("explore_in", &Explorer::callbackExplore, this);
@@ -338,16 +266,18 @@ namespace mrs_octomap_planner
 
     pub_reference_            = nh_.advertise<mrs_msgs::ReferenceStamped>("reference_out", 1);
     pub_transfomed_skeleton_  = nh_.advertise<visualization_msgs::Marker>("transformed_skeleton_out", 1);
-    pub_ransac_skeleton_      = nh_.advertise<visualization_msgs::Marker>("ransac_skeleton_out", 1);  
-    pub_big_ocotmap_          = nh_.advertise<visualization_msgs::MarkerArray>("big_octomap_out", 1);  
+    pub_ransac_skeleton_      = nh_.advertise<visualization_msgs::Marker>("ransac_skeleton_out", 1);
+    pub_big_ocotmap_          = nh_.advertise<visualization_msgs::MarkerArray>("big_octomap_out", 1);
     pub_candidate_viewpoints_ = nh_.advertise<sensor_msgs::PointCloud2>("candidate_viewpoints_out", 1);
 
-    sc_get_trajectory_       = mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>(nh_, "trajectory_generation_out");
-    sc_trajectory_reference_ = mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv>(nh_, "trajectory_reference_out");
+    sc_get_trajectory_            = mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>(nh_, "trajectory_generation_out");
+    sc_trajectory_reference_      = mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv>(nh_, "trajectory_reference_out");
+    sc_tsp_set_start_             = mrs_lib::ServiceClientHandler<tsp_solver::SetStart>(nh_, "set_start_out");
+    sc_tsp_solve_                 = mrs_lib::ServiceClientHandler<tsp_solver::Solve>(nh_, "solve_out");
+    sc_prm_find_simplified_path_  = mrs_lib::ServiceClientHandler<prm_solver::FindSimplifiedPath>(nh_, "find_simplified_path_out");
 
 
     timer_main_       = nh_.createTimer(ros::Rate(_rate_main_timer_), &Explorer::timerMain,      this);
-    timer_PRM_update_ = nh_.createTimer(ros::Rate(_rate_PRM_timer_),  &Explorer::timerPRMupdate, this);
     timer_path_       = nh_.createTimer(ros::Rate(_rate_path_timer_), &Explorer::timerPath,      this);
 
 
@@ -356,46 +286,9 @@ namespace mrs_octomap_planner
     transformer_->retryLookupNewest(true);
 
 
-    bv_frontiers_ = std::make_shared<mrs_lib::BatchVisualizer>(nh_, "visualize_frontiers", "");
-    bv_frontiers_->setPointsScale(_scale_points_);
-    bv_frontiers_->setLinesScale(_scale_lines_);
-
     bv_path_ = std::make_shared<mrs_lib::BatchVisualizer>(nh_, "visualize_path", "");
     bv_path_->setPointsScale(_scale_points_);
     bv_path_->setLinesScale(_scale_lines_*2.0);
-
-    bv_prm_ = std::make_shared<mrs_lib::BatchVisualizer>(nh_, "visualize_prm", "");
-    bv_prm_->setPointsScale(_scale_points_);
-    bv_prm_->setLinesScale(_scale_lines_/2.0);
-
-
-    frontier_manager_ = std::make_unique<FrontierManager>(bv_frontiers_,
-                                                          _free_space_dia_,
-                                                          _frontier_min_size_,
-                                                          _min_eigen_,
-                                                          _size_decrease_ratio_,
-                                                          _sample_attemps_,
-                                                          _viewpoint_sample_radius_,
-                                                          _viewpoint_sample_height_,
-                                                          _viewpoint_max_distance_,
-                                                          _viewpoint_max_angle_,
-                                                          _max_viewpoint_cnt_,
-                                                          _min_viewpoint_cnt_,
-                                                          _viewpoint_resample_probability_,
-                                                          _min_viewpoint_coverage_);
-    prm_manager_      = std::make_unique<PRM>(bv_prm_,
-                                              _free_space_dia_,
-                                              _ovelap_coefficient_,
-                                              _resample_factor_,
-                                              _node_max_age_,
-                                              _max_neighbors_,
-                                              _min_neighbor_distance_,
-                                              _max_neighbor_distance_);
-    flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_x_/2.0, -_flight_zone_width_y_/2.0, _flight_zone_floor_), 
-                    .max=octomap::point3d( _flight_zone_width_x_/2.0 , _flight_zone_width_y_/2.0, _flight_zone_floor_+_flight_zone_height_)};
-
-    auto distace_func = bind(&PRM::extraDistance, prm_manager_.get(), std::placeholders::_1, std::placeholders::_2);
-    tsp_solver_ = TSPsolver(_max_tsp_duration_, distace_func); 
 
     map_update_ = false;
     map_ready_ = false;
@@ -416,85 +309,19 @@ namespace mrs_octomap_planner
   }
 
 
-  void Explorer::timerMain([[maybe_unused]] const ros::TimerEvent& evt) 
+  void Explorer::timerMain([[maybe_unused]] const ros::TimerEvent& evt)
   {
     // ROS_ERROR_THROTTLE(1.0, "[MrsExplorer]: MAIN LOOP in '%s' STATE", _state_names_[state_].c_str());
     if (!is_initialized_ || !map_ready_) {
       return;
     }
 
-    if (state_ == STATE_MAP_UPDATED)
-    {
-      {
-        std::scoped_lock lock(mutex_TSP_, mutex_PRM_, mutex_frontiers_);
-        tsp_solver_.removeFrontiers();
-        tsp_solver_.addFrontiers(frontier_manager_->fis_c_);
-      }
-      tsp_ready_  = true;
-      changeState(STATE_FRONTIERS_UPDATED);
-    }
-
-    // ROS_WARN("main runnig");
+    // frontier sync (STATE_MAP_UPDATED -> STATE_FRONTIERS_UPDATED) now happens in callbackFrontiers()
 
   }
 
 
-  // updates the PRM map
-  void Explorer::timerPRMupdate([[maybe_unused]] const ros::TimerEvent& evt) 
-  {
-    if (!is_initialized_) 
-    {
-      return;
-    }
-
-    if (!map_ready_)
-    {
-      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: map not ready, cannot update PRM map");
-      return;
-    }
-    // ROS_ERROR("PRM UPDATE 1");
-    ros::Time t0 = ros::Time::now();
-
-    std::shared_ptr<OcTree_t> tree;
-    {
-      std::scoped_lock lock(mutex_octree_);
-      tree = std::make_shared<OcTree_t>(*octree_);
-    }
-
-    AABB local_zone = mrs_lib::get_mutexed(mutex_local_zone_, local_zone_);
-    
-    if (state_ == STATE_FRONTIERS_UPDATED)
-    {
-      // ROS_ERROR("PRM UPDATE 2");
-      std::scoped_lock lock(mutex_PRM_, mutex_frontiers_);
-      for (auto &viewpoint_position : frontier_manager_->added_frontiers_)
-      {
-        prm_manager_->addNode(viewpoint_position);
-      }
-      prm_manager_->updateZone(tree, local_zone, true);
-      // ROS_ERROR("PRM UPDATE --------------------------------------------------------");
-
-      changeState(STATE_WAITING);
-    }
-    else
-    {
-      // ROS_ERROR("PRM UPDATE ========================================================");
-      std::scoped_lock lock(mutex_PRM_);
-      prm_manager_->updateZone(tree, local_zone, false);
-    }
-
-
-    // ROS_ERROR("PRM DONE");
-    
-    ros::Duration dt = ros::Time::now() - t0;
-    ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: PRM zone update %.1fms", dt.toNSec()/1000000.0);
-    bv_prm_->publish();
-    bv_prm_->clearBuffers();
-    // ROS_ERROR("PRM DONE");
-  }
-
-
-  void Explorer::timerPath([[maybe_unused]] const ros::TimerEvent& evt) 
+  void Explorer::timerPath([[maybe_unused]] const ros::TimerEvent& evt)
   {
     if (!is_initialized_) 
     {
@@ -567,69 +394,28 @@ namespace mrs_octomap_planner
     
 
     if (!bv_map_frame_set_) {
-      bv_frontiers_->setParentFrame(msg->header.frame_id);
       bv_path_->setParentFrame(msg->header.frame_id);
-      bv_prm_->setParentFrame(msg->header.frame_id);
       bv_map_frame_set_ = true;
     }
 
     map_ready_  = true;
-    getFrontiers();
-    map_update_ = true;
-    
-    changeState(STATE_MAP_UPDATED);
-    ROS_INFO("[MrsExplorer]: new frontiers succesfuly found");
-    
-    bv_frontiers_->publish();
-    bv_frontiers_->clearBuffers();
-    
+
   }
 
 
-  bool Explorer::getFrontiers(){
-
-    ROS_INFO("[MrsExplorer]: starting FR extraction");
-    ros::Time t0 = ros::Time::now();
-
-    auto res = getPosition();
-    if (!res){
-      ROS_ERROR("[MRsExplorer] has no reference");
-      return false;
+  // signals that new frontiers are available, so a TSP re-solve is warranted
+  // (PRM roadmap updates from these frontiers now happen internally in the prm_solver nodelet)
+  void Explorer::callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg)
+  {
+    if (!is_initialized_) {
+      return;
     }
 
-    std::shared_ptr<OcTree_t> tree;
-    {
-      std::scoped_lock lock(mutex_octree_);
-      tree = std::make_shared<OcTree_t>(*octree_);
-    }
+    tsp_ready_ = true;
+    changeState(STATE_FRONTIERS_UPDATED);
+  }
 
-    auto pos = res.value().reference.position;
-    octomap::point3d start_coord(pos.x, pos.y, pos.z);
-    octomap::OcTreeKey start_key = tree->coordToKey(start_coord);
-    octomap::OcTreeNode* start_node = tree->search(start_key);
-    start_coord = tree->keyToCoord(start_key);
 
-    if (!start_node || tree->isNodeOccupied(start_node))
-    {
-      ROS_WARN("[MRsExplorer] start not present in tree or occupied");
-      return false;
-    }
-    // extract frontiers only from local area, frontiers outside cannot change
-    AABB local_zone = aabbFromCenter(start_coord, _local_zone_width_, _local_zone_width_, _local_zone_height_);
-    local_zone = makeIntersection(local_zone, flight_zone_);
-    mrs_lib::set_mutexed(mutex_local_zone_, local_zone, local_zone_);
-
-    {
-      std::scoped_lock lock(mutex_frontiers_);
-      frontier_manager_->processNewMap(tree, local_zone, start_key);
-    }
-
-    ros::Duration dt = ros::Time::now() - t0;
-    ROS_INFO("[MrsExplorer]: time to find frontiers %.1fms", dt.toNSec()/1000000.0);
-    return true;
-    
-}
-  
 
 
 bool Explorer::makePath()
@@ -668,12 +454,12 @@ bool Explorer::makePath()
     std::scoped_lock lock(mutex_octree_);
     tree = std::make_shared<OcTree_t>(*octree_);
   }
-  if (isFreeSpace(start_coord, _free_space_dia_, tree)){
+  if (octomap_planner_utils::isFreeSpace(start_coord, _free_space_dia_, tree)){
     last_free_point_ = start_coord;
   }
   for (auto & point : prediction.position)
   {
-    isInFreeSpace = isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
+    isInFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
     if (!isInFreeSpace)
     {
       ROS_ERROR("EMERGENCY REPLAN");
@@ -708,13 +494,31 @@ bool Explorer::makePath()
   std::vector<octomap::point3d> glob_path;
   {
     ROS_ERROR("TSP solve start");
-    std::scoped_lock lock(mutex_TSP_);
+
+    tsp_solver::SetStart set_start_srv;
+    set_start_srv.request.position.x = current_viewpoint_.x();
+    set_start_srv.request.position.y = current_viewpoint_.y();
+    set_start_srv.request.position.z = current_viewpoint_.z();
+    if (!sc_tsp_set_start_.call(set_start_srv) || !set_start_srv.response.success)
     {
-      std::scoped_lock lock(mutex_PRM_);
-      tsp_solver_.setStart(current_viewpoint_);
-      ROS_ERROR("TSP start set");
+      ROS_WARN("[MrsExplorer]: failed to set TSP start");
+      return false;
     }
-    glob_path = tsp_solver_.solve(velocity);
+    ROS_ERROR("TSP start set");
+
+    tsp_solver::Solve solve_srv;
+    solve_srv.request.velocity.x = velocity.x();
+    solve_srv.request.velocity.y = velocity.y();
+    solve_srv.request.velocity.z = velocity.z();
+    if (!sc_tsp_solve_.call(solve_srv) || !solve_srv.response.success)
+    {
+      ROS_WARN("[MrsExplorer]: TSP tour not found");
+      return false;
+    }
+    for (auto &p : solve_srv.response.path)
+    {
+      glob_path.emplace_back(p.x, p.y, p.z);
+    }
     ROS_ERROR("TSP solve end");
   }
 
@@ -754,18 +558,26 @@ bool Explorer::makePath()
     path_distance += path_distance + sub_global_path.back().distance(glob_path[i]);
     sub_global_path.push_back(glob_path[i]);
 
-    auto temp_path = prm_manager_->findPath(sub_global_path[j], sub_global_path[j+1],  j == 0 ? velocity : velocity*0.0);
-    if (temp_path.size() < 2)
+    prm_solver::FindSimplifiedPath find_path_srv;
+    find_path_srv.request.start.x = sub_global_path[j].x();
+    find_path_srv.request.start.y = sub_global_path[j].y();
+    find_path_srv.request.start.z = sub_global_path[j].z();
+    find_path_srv.request.goal.x  = sub_global_path[j+1].x();
+    find_path_srv.request.goal.y  = sub_global_path[j+1].y();
+    find_path_srv.request.goal.z  = sub_global_path[j+1].z();
+    octomath::Vector3 seg_velocity = j == 0 ? velocity : velocity*0.0;
+    find_path_srv.request.velocity.x = seg_velocity.x();
+    find_path_srv.request.velocity.y = seg_velocity.y();
+    find_path_srv.request.velocity.z = seg_velocity.z();
+    if (!sc_prm_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success)
     {
       ROS_WARN("temp path not found");
       return false;
     }
+    std::vector<octomap::point3d> temp_path;
+    for (auto &p : find_path_srv.response.path)
     {
-      std::scoped_lock lock(mutex_PRM_);
-      temp_path = prm_manager_->simplifyFreeSpacePath(temp_path);
-      std::reverse(temp_path.begin(), temp_path.end());
-      temp_path = prm_manager_->simplifyFreeSpacePath(temp_path);
-      std::reverse(temp_path.begin(), temp_path.end());
+      temp_path.emplace_back(p.x, p.y, p.z);
     }
 
     for (auto &p : temp_path)
@@ -815,7 +627,7 @@ bool Explorer::checkTrajectoryCollision()
   }
   for (auto & point : prediction.position)
   {
-    isInFreeSpace = isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
+    isInFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
     if (!isInFreeSpace)
     {
       // goal_ = start_coord;
@@ -883,35 +695,6 @@ bool  Explorer::makeTrajectory()
   return true;
 }
 
-bool Explorer::setPath(std::vector<octomap::point3d> path)
-{
-  if (path.size() == 0)
-  {
-    return false;
-  }
-  
-  {
-    std::scoped_lock lock(mutex_PRM_);
-    path = prm_manager_->simplifyFreeSpacePath(path);
-    std::reverse(path.begin(), path.end());
-    path = prm_manager_->simplifyFreeSpacePath(path);
-    std::reverse(path.begin(), path.end());
-  }
-
-  path_ = std::vector<octomap::point3d>(0);
-  for (int i=1; i<path.size(); i++)
-  {
-    // dont insert path points that are too close to each other for better trajetory following 
-    auto point = path[i];
-    if (path_.size() > 0 && path_.back().distance(point) < _skip_path_point_distance_){
-      continue;
-    }
-    path_.push_back(point);
-  }
-  return true;
-}
-
-
 std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction()
 {
   const bool got_control_manager_diag = sh_control_manager_diag_.hasMsg() && (ros::Time::now() - sh_control_manager_diag_.lastMsgTime()).toSec() < 2.0;
@@ -939,29 +722,8 @@ std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction
 
 std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void> >> Explorer::getPosition()
 {
-
-  const bool got_control_manager_diag = sh_control_manager_diag_.hasMsg() && (ros::Time::now() - sh_control_manager_diag_.lastMsgTime()).toSec() < 2.0;
-  const bool got_tracker_cmd   = sh_tracker_cmd_.hasMsg() && (ros::Time::now() - sh_tracker_cmd_.lastMsgTime()).toSec() < 2.0;
-  if (!got_control_manager_diag || !got_tracker_cmd){
-    ROS_WARN("[MrsExplorer]: tracker not redy");
-    return {};
-  }
-
-  mrs_msgs::TrackerCommandConstPtr tracker_cmd  = sh_tracker_cmd_.getMsg();
-  auto                             octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
-  // transform the position cmd to the map frame
-  mrs_msgs::ReferenceStamped position_cmd_ref;
-  position_cmd_ref.header               = tracker_cmd->header;
-  position_cmd_ref.reference.position.x = tracker_cmd->position.x;
-  position_cmd_ref.reference.position.y = tracker_cmd->position.y;
-  position_cmd_ref.reference.position.z = tracker_cmd->position.z;
-  position_cmd_ref.reference.heading    = tracker_cmd->heading;
-  std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void> >> res = transformer_->transformSingle(position_cmd_ref, octree_frame);
-  if (!res) {
-      ROS_WARN("[MrsExplorer]: could not transform position cmd to the map frame");
-      return {};
-    }
-  return res;
+  auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+  return octomap_planner_utils::getPosition(sh_control_manager_diag_, sh_tracker_cmd_, octree_frame, *transformer_, "[MrsExplorer]");
 }
 
 
@@ -1117,20 +879,11 @@ void Explorer::targetSkeletonCallback(const visualization_msgs::Marker::ConstPtr
   pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_pointcloud(new pcl::PointCloud<pcl::PointXYZ>());
   pcl::transformPointCloud(*source_viewpoint_candidates_, *transformed_pointcloud, T);
 
-  {
-    std::scoped_lock lock(mutex_TSP_);
-    ROS_ERROR("loading tsp kd tree");
-    tsp_solver_.setKDtreeInput(transformed_pointcloud);
-  }
-
   sensor_msgs::PointCloud2 output_msg;
   pcl::toROSMsg(*transformed_pointcloud, output_msg);
   output_msg.header.frame_id = msg->header.frame_id; // Set frame
   output_msg.header.stamp = ros::Time::now();
   pub_candidate_viewpoints_.publish(output_msg);
-
-  // tsp_solver_.guiding_viewpoints_ = transformed_viewpoint_candidates_;
-
 
   std::vector<geometry_msgs::Point> transformed_points = std::vector<geometry_msgs::Point>(0);
 

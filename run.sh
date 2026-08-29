@@ -10,6 +10,9 @@ catkin init
 
 clear
 
+catkin build octomap_planner_utils
+catkin build frontier_detection
+catkin build prm_solver
 catkin build mrs_octomap_planner
 catkin build mrs_octomap_mapping_planning
 

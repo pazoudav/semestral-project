@@ -1,0 +1,26 @@
+zone:
+  global:
+    floor:  -0.1       # keep numerically in sync with mrs_octomap_planner/config/explorer.yaml zone.global.floor
+  local:
+    width:  11.0         # keep numerically in sync with .../explorer.yaml zone.local.width
+    height: 9.0          # keep numerically in sync with .../explorer.yaml zone.local.height
+
+prm:
+  free_space_diameter: 1.2   # keep numerically in sync with .../explorer.yaml prm.free_space_diameter
+  overlap_coefficient: 0.7
+  node_max_age: 256
+  max_neighbors: 6
+  min_neighbor_distance: 0.4
+  max_neighbor_distance: 2.0
+  min_node_distance: 0.1
+  resample_factor: 0.95
+  init_matrix_size: 32
+  max_cost: 1000000.0
+
+viz:
+  scale:
+    points: 0.05
+    lines: 0.02
+
+timer_rates:
+  update: 5.0

@@ -1,0 +1,52 @@
+NAME : global.1443.tour
+COMMENT : Length = 1443
+COMMENT : Found by LKH [Keld Helsgaun] Sat Aug 29 16:18:20 2026
+TYPE : TOUR
+DIMENSION : 44
+TOUR_SECTION
+1
+44
+9
+43
+42
+40
+41
+17
+36
+28
+35
+38
+37
+16
+12
+11
+15
+14
+13
+10
+39
+34
+32
+33
+31
+26
+30
+27
+29
+24
+25
+23
+22
+20
+21
+19
+18
+8
+7
+5
+4
+6
+3
+2
+-1
+EOF

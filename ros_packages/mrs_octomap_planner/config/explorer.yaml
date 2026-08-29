@@ -1,12 +1,3 @@
-zone:
-  global:
-    width:  16.0
-    height: 25.0
-    floor:  -1.0
-  local: 
-    width:  11.0 
-    height: 11.0
-
 planning:
   replanning_distance: 0.6
   big_distance: 1000000.0
@@ -14,19 +5,8 @@ planning:
   skip_path_point_distance: 0.4
   flight_free_distance: 0.8
 
-tsp:
-  max_duration: 10000000
-
 prm:
-  free_space_diameter: 1.2
-  overlap_coefficient: 0.7
-  node_max_age: 256
-  max_neighbors: 6
-  min_neighbor_distance: 0.4
-  max_neighbor_distance: 2.0
-  resample_factor: 0.95
-  init_matrix_size: 32
-  max_cost: 1000000.0
+  free_space_diameter: 1.2   # keep numerically in sync with prm_solver/config/prm_solver.yaml prm.free_space_diameter
 
 frontiers:
   min_size: 8
@@ -50,7 +30,6 @@ viz:
 
 timer_rates:
   main: 10.0
-  PRM_update: 5.0
   path: 10.0
 
 

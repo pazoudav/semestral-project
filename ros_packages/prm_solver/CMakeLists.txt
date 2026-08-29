@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mrs_octomap_planner)
+project(prm_solver)
 
 add_definitions(-DOCTOMAP_NODEBUGOUT)
 add_definitions(-O3)
@@ -17,38 +17,30 @@ set(CATKIN_DEPENDENCIES
   cmake_modules
   mrs_lib
   mrs_msgs
-  mrs_modules_msgs
-  mrs_octomap_tools
-  mrs_subt_planning_lib
-  nav_msgs
   nodelet
-  octomap_msgs
-  octomap_ros
   roscpp
   rospy
+  octomap_msgs
+  octomap_ros
+  message_generation
+  message_runtime
   std_msgs
   geometry_msgs
-  message_generation
-  visualization_msgs
-  sensor_msgs
   frontier_detection
   octomap_planner_utils
-  tsp_solver
-  prm_solver
-  )
+)
+
 
 set(LIBRARIES
-  MrsOctomapPlanner_Explorer
-  )
+  MrsPrmSolver
+)
 
 find_package(catkin REQUIRED
   ${CATKIN_DEPENDENCIES}
-  )
+)
 
 find_package(octomap REQUIRED)
 add_definitions(-DOCTOMAP_NODEBUGOUT)
-
-find_package(dynamicEDT3D REQUIRED)
 
 # include Eigen3
 find_package(Eigen3 REQUIRED)
@@ -56,10 +48,10 @@ set(Eigen_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
 set(Eigen_LIBRARIES ${Eigen_LIBRARIES})
 
 add_service_files(FILES
-  Path.srv
+  FindSimplifiedPath.srv
 )
 
-## Generate added messages and services with any dependencies listed here
+## Generate added services with any dependencies listed here
 generate_messages(DEPENDENCIES
   std_msgs
   geometry_msgs
@@ -70,34 +62,34 @@ catkin_package(
   CATKIN_DEPENDS ${CATKIN_DEPENDENCIES}
   LIBRARIES ${LIBRARIES}
   DEPENDS OCTOMAP message_runtime
-  )
+)
 
 include_directories(SYSTEM
   include
   ${catkin_INCLUDE_DIRS}
   ${OCTOMAP_INCLUDE_DIRS}
-  ${dynamicEDT3D_INCLUDE_DIRS}
-  )
+  ${EIGEN3_INCLUDE_DIRS}
+)
 
+add_library(MrsPrmSolver
+  src/prm.cpp
+  src/prm_nodelet.cpp
+)
 
-add_library(MrsOctomapPlanner_Explorer
-  src/explorer.cpp
-  )
-
-add_dependencies(MrsOctomapPlanner_Explorer
+add_dependencies(MrsPrmSolver
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
-  )
+)
 
-target_link_libraries(MrsOctomapPlanner_Explorer
+target_link_libraries(MrsPrmSolver
   ${catkin_LIBRARIES}
   ${OCTOMAP_LIBRARIES}
-  ${DYNAMICEDT3D_LIBRARIES}
-  )
+)
 
 ## --------------------------------------------------------------
 ## |                           Install                          |
 ## --------------------------------------------------------------
+
 
 install(TARGETS ${LIBRARIES}
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

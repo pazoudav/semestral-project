@@ -1,0 +1,39 @@
+<launch>
+
+  <arg name="UAV_NAME" default="$(env UAV_NAME)" />
+
+  <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
+
+  <!-- other args -->
+  <arg name="debug" default="false" />
+  <arg name="standalone" default="true" />
+  <arg name="custom_config" default="" />
+
+  <arg     if="$(arg debug)" name="launch_prefix" value="debug_roslaunch" />
+  <arg unless="$(arg debug)" name="launch_prefix" value="" />
+
+  <arg name="nodelet_manager_name" default="" />
+  <arg     if="$(eval arg('standalone') or arg('debug'))" name="nodelet" value="standalone" />
+  <arg unless="$(eval arg('standalone') or arg('debug'))" name="nodelet" value="load" />
+  <arg     if="$(eval arg('standalone') or arg('debug'))" name="nodelet_manager" value="" />
+  <arg unless="$(eval arg('standalone') or arg('debug'))" name="nodelet_manager" value="$(arg nodelet_manager_name)" />
+
+  <group ns="$(arg UAV_NAME)">
+
+    <node pkg="nodelet" type="nodelet" name="tsp_solver" args="$(arg nodelet) tsp_solver/Solver $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
+
+      <rosparam file="$(find tsp_solver)/config/tsp_solver.yaml" command="load" />
+
+      <!-- topics in -->
+      <remap from="~frontiers_in" to="frontier_detection/frontiers" />
+      <remap from="~candidate_viewpoints_in" to="candidate_viewpoints" />
+
+      <!-- services in -->
+      <remap from="~set_start_in" to="~set_start" />
+      <remap from="~solve_in" to="~solve" />
+
+    </node>
+
+  </group>
+
+</launch>

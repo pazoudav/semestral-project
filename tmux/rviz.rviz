@@ -333,7 +333,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /uav1/explorer/visualize_frontiers
+          Marker Topic: /uav1/detector/visualize_frontiers
           Name: visualize_frontiers
           Namespaces:
             visualize_frontiers_lines: true
@@ -343,7 +343,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /uav1/explorer/visualize_prm
+          Marker Topic: /uav1/prm_solver/visualize_prm
           Name: visualize_prm
           Namespaces:
             visualize_prm_lines: true

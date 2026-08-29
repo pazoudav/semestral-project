@@ -1,0 +1,51 @@
+<launch>
+
+  <arg name="UAV_NAME" default="$(env UAV_NAME)" />
+
+  <arg name="ZONE_X" default="$(env ZONE_X)" />
+  <arg name="ZONE_Y" default="$(env ZONE_Y)" />
+  <arg name="ZONE_Z" default="$(env ZONE_Z)" />
+
+  <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
+
+  <!-- <env name="ROSCONSOLE_CONFIG_FILE" if="$(eval arg('LOGGER_DEBUG'))" value="$(find mrs_octomap_planner)/config/debug_verbosity.yaml" /> -->
+
+  <!-- other args -->
+  <arg name="debug" default="false" />
+  <arg name="standalone" default="true" />
+  <arg name="custom_config" default="" />
+
+  <arg     if="$(arg debug)" name="launch_prefix" value="debug_roslaunch" />
+  <arg unless="$(arg debug)" name="launch_prefix" value="" />
+
+  <arg name="nodelet_manager_name" default="" />
+  <arg     if="$(eval arg('standalone') or arg('debug'))" name="nodelet" value="standalone" />
+  <arg unless="$(eval arg('standalone') or arg('debug'))" name="nodelet" value="load" />
+  <arg     if="$(eval arg('standalone') or arg('debug'))" name="nodelet_manager" value="" />
+  <arg unless="$(eval arg('standalone') or arg('debug'))" name="nodelet_manager" value="$(arg nodelet_manager_name)" />
+
+  <group ns="$(arg UAV_NAME)">
+
+    <node pkg="nodelet" type="nodelet" name="detector" args="$(arg nodelet) frontier_detection/Detector $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
+
+      <rosparam file="$(find frontier_detection)/config/detector.yaml" command="load" />
+
+      <param name="uav_name" value="$(arg UAV_NAME)" />
+
+      <param name="zone_x" value="$(arg ZONE_X)" />
+      <param name="zone_y" value="$(arg ZONE_Y)" />
+      <param name="zone_z" value="$(arg ZONE_Z)" />
+
+      <!-- topics in -->
+      <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
+      <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
+      <remap from="~diagnostics_in" to="control_manager/diagnostics" />
+
+      <!-- topics out -->
+      <remap from="~frontiers_out" to="frontier_detection/frontiers" />
+
+    </node>
+
+  </group>
+
+</launch>

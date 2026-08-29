@@ -1,0 +1,5 @@
+<library path="lib/libMrsPrmSolver">
+  <class name="prm_solver/PRM" type="prm_solver::PRMNodelet" base_class_type="nodelet::Nodelet">
+    <description>MRS PRM roadmap building and path search nodelet</description>
+  </class>
+</library>

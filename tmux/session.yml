@@ -54,7 +54,10 @@ windows:
   - goto:
       layout: tiled
       panes:
-        - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        - waitForHw; roslaunch frontier_detection detector.launch
+        - waitForHw; roslaunch tsp_solver tsp_solver.launch
+        - waitForHw; roslaunch prm_solver prm_solver.launch
   - skeleton:
       layout: tiled
       panes:

@@ -1,0 +1,29 @@
+zone:
+  global:
+    floor:  -0.1       # keep numerically in sync with mrs_octomap_planner/config/explorer.yaml zone.global.floor
+  local:
+    width:  11.0         # keep numerically in sync with .../explorer.yaml zone.local.width
+    height: 9.0          # keep numerically in sync with .../explorer.yaml zone.local.height
+
+prm:
+  free_space_diameter: 1.2   # keep numerically in sync with .../explorer.yaml prm.free_space_diameter
+                              # (used here only for viewpoint free-space validation)
+
+frontiers:
+  min_size: 128
+  del_size: 16
+  min_svd_eigen_value: 64
+  size_decrease_ratio: 0.95
+  viewpoint:
+    sample_attempts: 64
+    sample_radius: 3.5
+    sample_height: 2.0
+    max_distance: 3.8
+    max_angle: 0.75 # ~= pi/4
+    max_count: 8
+    min_coverage: 8
+
+viz:
+  scale:
+    points: 0.05
+    lines: 0.02

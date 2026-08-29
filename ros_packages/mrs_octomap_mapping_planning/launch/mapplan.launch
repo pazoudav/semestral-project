@@ -161,6 +161,39 @@
 
   <!-- //} -->
 
+  <!-- FrontierDetection //{ -->
+
+  <!-- <include file="$(find frontier_detection)/launch/detector.launch">
+
+    <arg name="standalone" value="true" />
+    <arg name="debug" value="false" />
+
+  </include> -->
+
+  <!-- //} -->
+
+  <!-- PRMsolver //{ -->
+
+  <!-- <include file="$(find prm_solver)/launch/prm_solver.launch">
+
+    <arg name="standalone" value="true" />
+    <arg name="debug" value="false" />
+
+  </include> -->
+
+  <!-- //} -->
+
+  <!-- TSPsolver //{ -->
+
+  <!-- <include file="$(find tsp_solver)/launch/tsp_solver.launch">
+
+    <arg name="standalone" value="true" />
+    <arg name="debug" value="false" />
+
+  </include> -->
+
+  <!-- //} -->
+
   <!-- OctomapPlanner //{ -->
 
   <include file="$(find mrs_octomap_planner)/launch/explorer.launch">

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="2">
+
+  <name>frontier_detection</name>
+  <version>1.0.0</version>
+  <description>The frontier detection package</description>
+
+  <maintainer email="pazoudav@fel.cvut.cz">David Pazout</maintainer>
+  <!-- <maintainer email="tomas.baca@fel.cvut.cz">Tomas Baca</maintainer> -->
+
+  <license>BSD 3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cmake_modules</depend>
+  <depend>mrs_lib</depend>
+  <depend>mrs_msgs</depend>
+  <depend>nodelet</depend>
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>octomap_msgs</depend>
+  <depend>octomap_ros</depend>
+  <depend>message_generation</depend>
+  <depend>message_runtime</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>octomap_planner_utils</depend>
+  <!-- <depend>dynamic_edt_3d</depend>
+  <depend>mrs_octomap_tools</depend> -->
+
+  <export>
+    <nodelet plugin="${prefix}/nodelets.xml" />
+  </export>
+
+</package>
