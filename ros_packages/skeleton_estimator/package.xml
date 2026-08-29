@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="2">
+
+  <name>skeleton_estimator</name>
+  <version>1.0.0</version>
+  <description>ROSA-based curve-skeleton extraction from the live octomap point cloud, ported from FC-Planner's rosa package</description>
+
+  <maintainer email="pazoudav@fel.cvut.cz">David Pazout</maintainer>
+
+  <license>BSD 3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cmake_modules</depend>
+  <depend>mrs_lib</depend>
+  <depend>nodelet</depend>
+  <depend>pluginlib</depend>
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_ros</depend>
+
+  <export>
+    <nodelet plugin="${prefix}/nodelets.xml" />
+  </export>
+
+</package>

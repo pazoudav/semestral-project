@@ -1,0 +1,12 @@
+# ROSA algorithm parameters, carried over from FC-Planner's rosa/launch/pylon-34.launch
+# (the values the manual "skeleton" tmux window used to launch with).
+rosa:
+  radius: 0.1                # mahalanobis-distance neighbor search radius
+  num_drosa: 5                # drosa optimization iterations
+  num_dcrosa: 2                # dcrosa (discrete contraction) iterations
+  k_KNN: 6                    # surface k-NN neighborhood size
+  sample_r: 0.05               # skeleton vertex sampling radius
+  alpha: 0.3                  # recentering blend factor (projection vs. euclidean center)
+  pt_downsample_size: 0.02    # initial voxel-grid downsample leaf size
+  estimation_number: 10       # k-NN size for normal estimation
+  ground: false                # synthesize a pseudo-ground point cloud beneath the input

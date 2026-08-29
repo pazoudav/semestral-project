@@ -61,10 +61,12 @@ windows:
   - skeleton:
       layout: tiled
       panes:
-        - waitForGazebo; cd ~/user_ros_workspace/src/FC-Planner; source devel/setup.bash; roslaunch rosa pylon-34.launch
         - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker 
         - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
-        - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        - waitForGazebo; roslaunch skeleton_estimator skeleton_estimator.launch
+        # - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker; 
+        #   cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray;
+        # - waitForGazebo; roslaunch skeleton_estimator skeleton_estimator.launch
         
   - rviz:
       layout: tiled

@@ -1,0 +1,5 @@
+<library path="lib/libSkeletonEstimator">
+  <class name="skeleton_estimator/SkeletonEstimator" type="skeleton_estimator::SkeletonEstimator" base_class_type="nodelet::Nodelet">
+    <description>ROSA-based curve-skeleton extraction from the live octomap point cloud</description>
+  </class>
+</library>

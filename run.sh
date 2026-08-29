@@ -15,6 +15,7 @@ catkin build frontier_detection
 catkin build prm_solver
 catkin build mrs_octomap_planner
 catkin build mrs_octomap_mapping_planning
+catkin build skeleton_estimator
 
 export WORLD_NAME="${@: -1}"
 WB=$(/home/david/user_ros_workspace/data/dist/worldbounds/worldbounds $WORLD_NAME)
