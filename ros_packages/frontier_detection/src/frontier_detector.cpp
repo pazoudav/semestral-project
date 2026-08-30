@@ -21,6 +21,8 @@
 #include <optional>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <condition_variable>
 
 
 namespace frontier_detection
@@ -30,10 +32,31 @@ namespace frontier_detection
   using OcTreeSharedPtr_t = std::shared_ptr<octomap::OcTree>;
 
 
+  // one frontier's worth of drawing data, copied out of a FIS so the visualization worker never touches FrontierManager's own state
+  struct FrontierVis
+  {
+    octomap::point3d                                  center;
+    octomap_planner_utils::color_t                     color;
+    std::vector<std::pair<octomap::point3d, bool>>     viewpoints; // position, is_best (drawn as a bigger cuboid)
+    frontier_t                                          cells;
+  };
+
+  // a full, self-contained snapshot of what bv_frontiers_ should currently show; built cheaply on the octomap-callback thread
+  // and handed off to the visualization worker thread, which does the (comparatively expensive) marker construction + publish
+  struct VisualizationSnapshot
+  {
+    std::string                  frame_id;
+    double                       resolution;
+    octomap_planner_utils::AABB  zone;
+    std::vector<FrontierVis>     frontiers;
+  };
+
+
   class Detector : public nodelet::Nodelet
   {
     public:
       virtual void onInit();
+      ~Detector();
 
     private:
       ros::NodeHandle nh_;
@@ -75,6 +98,14 @@ namespace frontier_detection
       std::unique_ptr<FrontierManager> frontier_manager_;
       std::unique_ptr<mrs_lib::Transformer> transformer_;
 
+      // background visualization worker: keeps all bv_frontiers_ marker construction + publish() off the octomap-callback thread.
+      // only ever touched by visualizationWorker() itself once started, so bv_frontiers_/bv_map_frame_set_ need no locking there.
+      std::thread             vis_thread_;
+      std::mutex              vis_mutex_;
+      std::condition_variable vis_cv_;
+      std::optional<VisualizationSnapshot> pending_vis_snapshot_;
+      bool                     vis_shutdown_ = false;
+
       mrs_lib::SubscribeHandler<octomap_msgs::Octomap>                sh_octomap_;
       mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>              sh_tracker_cmd_;
       mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>   sh_control_manager_diag_;
@@ -93,6 +124,11 @@ namespace frontier_detection
       std::optional<OcTreeSharedPtr_t>                                 msgToMap(const octomap_msgs::OctomapConstPtr octomap);
       // builds and publishes a FrontierArray with the single best (highest-coverage) viewpoint per valid frontier
       void                                                             publishFrontiers();
+
+      // copies the current frontier state (under mutex_frontiers_) into a VisualizationSnapshot and hands it to the visualization worker
+      void enqueueVisualization();
+      // background loop: waits for a new snapshot, then draws it into bv_frontiers_ and publishes/clears it
+      void visualizationWorker();
   };
 
 
@@ -161,8 +197,7 @@ namespace frontier_detection
     bv_frontiers_->setPointsScale(_scale_points_);
     bv_frontiers_->setLinesScale(_scale_lines_);
 
-    frontier_manager_ = std::make_unique<FrontierManager>(bv_frontiers_,
-                                                           _free_space_dia_,
+    frontier_manager_ = std::make_unique<FrontierManager>(_free_space_dia_,
                                                            _frontier_min_size_,
                                                            _min_eigen_,
                                                            _size_decrease_ratio_,
@@ -179,8 +214,22 @@ namespace frontier_detection
 
     map_ready_ = false;
 
+    vis_thread_ = std::thread(&Detector::visualizationWorker, this);
+
     is_initialized_ = true;
     ROS_INFO("[Detector]: initialized!");
+  }
+
+  Detector::~Detector()
+  {
+    {
+      std::scoped_lock lock(vis_mutex_);
+      vis_shutdown_ = true;
+    }
+    vis_cv_.notify_all();
+    if (vis_thread_.joinable()) {
+      vis_thread_.join();
+    }
   }
 
   // on each new octomap: decodes it, locates the UAV, derives a local search zone around it, runs FrontierManager::processNewMap, then publishes viz + frontiers
@@ -201,11 +250,6 @@ namespace frontier_detection
 
     mrs_lib::set_mutexed(mutex_octree_, octree_local.value(), octree_);
     mrs_lib::set_mutexed(mutex_octree_, msg->header.frame_id, octree_frame_);
-
-    if (!bv_map_frame_set_) {
-      bv_frontiers_->setParentFrame(msg->header.frame_id);
-      bv_map_frame_set_ = true;
-    }
 
     map_ready_ = true;
 
@@ -244,10 +288,9 @@ namespace frontier_detection
       frontier_manager_->processNewMap(tree, local_zone, start_key);
     }
 
-    bv_frontiers_->publish();
-    bv_frontiers_->clearBuffers();
-
     publishFrontiers();
+
+    enqueueVisualization();
   }
 
   void Detector::publishFrontiers()
@@ -283,6 +326,109 @@ namespace frontier_detection
     
 
     pub_frontiers_.publish(msg);
+  }
+
+  void Detector::enqueueVisualization()
+  {
+    VisualizationSnapshot snapshot;
+    snapshot.frame_id = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+    snapshot.resolution = mrs_lib::get_mutexed(mutex_octree_, octree_)->getResolution();
+
+    {
+      std::scoped_lock lock(mutex_frontiers_);
+      snapshot.zone = frontier_manager_->currentZone();
+      int min_coverage = frontier_manager_->minCoverage();
+
+      for (auto &fis : frontier_manager_->fis_c_)
+      {
+        if (!fis->valid_) {
+          continue;
+        }
+
+        FrontierVis fv;
+        fv.center = fis->center_;
+        fv.color  = octomap_planner_utils::getColor(static_cast<int>(snapshot.frontiers.size()));
+        for (size_t vidx = 0; vidx < fis->viewpoints_.size(); vidx++)
+        {
+          auto &v = fis->viewpoints_[vidx];
+          if (v.coverage >= min_coverage)
+          {
+            fv.viewpoints.emplace_back(v.position, vidx == 0);
+          }
+        }
+        fv.cells = fis->cells_;
+        snapshot.frontiers.push_back(std::move(fv));
+      }
+    }
+
+    {
+      std::scoped_lock lock(vis_mutex_);
+      pending_vis_snapshot_ = std::move(snapshot);
+    }
+    vis_cv_.notify_one();
+  }
+
+  // runs on its own thread for the lifetime of the nodelet: waits for a fresh snapshot, then does all the (comparatively
+  // expensive) BatchVisualizer marker construction + publish/clearBuffers, keeping it off the octomap-callback thread.
+  // bv_frontiers_/bv_map_frame_set_ are only ever touched from this thread, so no locking is needed around them here.
+  void Detector::visualizationWorker()
+  {
+    while (true)
+    {
+      VisualizationSnapshot snapshot;
+      {
+        std::unique_lock lock(vis_mutex_);
+        vis_cv_.wait(lock, [this] { return vis_shutdown_ || pending_vis_snapshot_.has_value(); });
+        if (vis_shutdown_) {
+          return;
+        }
+        snapshot = std::move(pending_vis_snapshot_.value());
+        pending_vis_snapshot_.reset();
+      }
+
+      if (!bv_map_frame_set_) {
+        bv_frontiers_->setParentFrame(snapshot.frame_id);
+        bv_map_frame_set_ = true;
+      }
+
+      for (auto &fv : snapshot.frontiers)
+      {
+        bv_frontiers_->addPoint(Eigen::Vector3d(fv.center.x(), fv.center.y(), fv.center.z()), fv.color.r, fv.color.g, fv.color.b, 1.0);
+
+        for (auto &[pos, is_best] : fv.viewpoints)
+        {
+          Eigen::Vector3d           center(pos.x(), pos.y(), pos.z());
+          double                    cube_scale  = snapshot.resolution * (is_best ? 0.6 : 0.2);
+          Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
+          Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+          mrs_lib::geometry::Cuboid c(center, size, orientation);
+          bv_frontiers_->addCuboid(c, fv.color.r, fv.color.g, fv.color.b, 1.0, true);
+        }
+
+        for (auto &cell : fv.cells)
+        {
+          Eigen::Vector3d           center(cell.x(), cell.y(), cell.z());
+          double                    cube_scale  = snapshot.resolution * 0.5;
+          Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
+          Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+          mrs_lib::geometry::Cuboid c(center, size, orientation);
+          bv_frontiers_->addCuboid(c, fv.color.r, fv.color.g, fv.color.b, 0.1, true);
+        }
+      }
+
+      {
+        Eigen::Vector3d center((snapshot.zone.min.x() + snapshot.zone.max.x()) / 2.0, (snapshot.zone.min.y() + snapshot.zone.max.y()) / 2.0,
+                                (snapshot.zone.min.z() + snapshot.zone.max.z()) / 2.0);
+        Eigen::Vector3d           size(snapshot.zone.max.x() - snapshot.zone.min.x(), snapshot.zone.max.y() - snapshot.zone.min.y(),
+                            snapshot.zone.max.z() - snapshot.zone.min.z());
+        Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+        mrs_lib::geometry::Cuboid c(center, size, orientation);
+        bv_frontiers_->addCuboid(c, 1.0, 1.0, 1.0, 1.0, false);
+      }
+
+      bv_frontiers_->publish();
+      bv_frontiers_->clearBuffers();
+    }
   }
 
   void Detector::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg)

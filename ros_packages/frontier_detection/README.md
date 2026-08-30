@@ -19,7 +19,7 @@
 | Handle | Remapped to | Type | Purpose |
 |---|---|---|---|
 | `~frontiers_out` | `frontier_detection/frontiers` | `frontier_detection/FrontierArray` | One entry per valid frontier cluster, each carrying only its single best (highest-coverage) viewpoint. |
-| (internal) `visualize_frontiers` | — | via `mrs_lib::BatchVisualizer` | Frontier cell cubes, cluster centers, viewpoint cubes, and the current search-zone wireframe, for RViz. |
+| (internal) `visualize_frontiers` | — | via `mrs_lib::BatchVisualizer` | Frontier cell cubes, cluster centers, viewpoint cubes, and the current search-zone wireframe, for RViz. Built and published entirely from a dedicated background thread (`Detector::visualizationWorker`), decoupled from the octomap-processing pipeline so marker construction never blocks frontier detection. |
 
 ### Custom messages
 
@@ -29,12 +29,14 @@
 
 ## Important functions/classes
 
-- **`Detector`** (`frontier_detector.cpp`) — the nodelet itself. Loads config, wires up subscribers/publisher, and on every new octomap: decodes it, resolves the UAV's current position, computes a local search zone around it (`octomap_planner_utils::localZoneFromPosition`), drives `FrontierManager::processNewMap`, then publishes visualization and the `FrontierArray`.
-  - `callbackOctomap` — main per-map update; the effective driver of the whole pipeline.
+- **`Detector`** (`frontier_detector.cpp`) — the nodelet itself. Loads config, wires up subscribers/publisher, and on every new octomap: decodes it, resolves the UAV's current position, computes a local search zone around it (`octomap_planner_utils::localZoneFromPosition`), drives `FrontierManager::processNewMap`, publishes the `FrontierArray`, and hands a visualization snapshot off to a dedicated background thread. It owns the `mrs_lib::BatchVisualizer` (`bv_frontiers_`) itself — `FrontierManager` has no knowledge of it at all — via a `vis_thread_` (started at the end of `onInit()`, joined in the `~Detector()` destructor) that is the *only* code touching `bv_frontiers_`/`bv_map_frame_set_`, so no locking is needed around them.
+  - `callbackOctomap` — main per-map update; the effective driver of the whole pipeline. Ends by calling `publishFrontiers()` then `enqueueVisualization()` — neither call itself does any (potentially slow) `BatchVisualizer` marker work.
   - `publishFrontiers` — builds the outgoing `FrontierArray`, keeping only the single best viewpoint per frontier.
+  - `enqueueVisualization` — under the existing `mutex_frontiers_` lock, copies `FrontierManager::fis_c_`'s centers/colors/viewpoints/cells (plus `minCoverage()`/`currentZone()`) into a lightweight `VisualizationSnapshot`, then hands it to the worker thread by setting `pending_vis_snapshot_` and notifying `vis_cv_`.
+  - `visualizationWorker` — runs on `vis_thread_` for the nodelet's entire lifetime: blocks on `vis_cv_` for the next `pending_vis_snapshot_`, then does all the `bv_frontiers_->addPoint`/`addCuboid`/`publish`/`clearBuffers`/`setParentFrame` work for that snapshot. Exits when `~Detector()` sets `vis_shutdown_` and notifies the condition variable.
   - `getPosition` — resolves the UAV reference position from tracker command + diagnostics via `octomap_planner_utils::getPosition`.
   - `msgToMap` — decodes an `octomap_msgs/Octomap` (binary or full) into an `octomap::OcTree`.
-- **`FrontierManager`** (`frontier_manager.hpp`/`.cpp`) — owns the set of frontier clusters (`FIS`) inside the active zone.
+- **`FrontierManager`** (`frontier_manager.hpp`/`.cpp`) — owns the set of frontier clusters (`FIS`) inside the active zone. Has no knowledge of visualization whatsoever — its constructor takes only the sampling/scoring tunables (no `BatchVisualizer` parameter), and `processNewMap` never builds any markers; instead it exposes `minCoverage()`/`currentZone()` getters so a caller (`Detector::enqueueVisualization`) can reconstruct what `processNewMap` would have drawn.
   - `processNewMap` — full update pass: removes stale frontiers, BFS-extracts newly discovered frontier cell clusters starting from the UAV's cell, adds/splits them, and (re)samples viewpoints for clusters intersecting the current zone.
   - `removeFrontiers` — drops frontiers that fail `isStillFrontier`, growing the search zone to re-cover the space they vacated, and marks surviving frontiers' cells as already-explored so the BFS doesn't rediscover them.
   - `isStillFrontier` — re-validates a previously found cluster: false if it shrank below `min_frontier_size_` or if fewer than `size_decrease_ratio_` of its cells are still genuine frontier cells.
@@ -42,6 +44,7 @@
   - `addFrontier` — adds a cluster as a new `FIS`; if it's too large, splits it in two via SVD (along the dominant axis) and recurses.
   - `makeViewpoints` — samples candidate viewpoints around a `FIS`, keeping only ones in free space with enough surrounding clearance and sufficient coverage, sorted best-first.
   - `viewpointCoverage` — counts how many of a frontier's cells are within max range/angle of a viewpoint and reachable by an unoccluded octomap raycast.
+  - `minCoverage` / `currentZone` — public getters exposing `min_coverage_` and `zone_` (the latter as last set by `processNewMap`/`removeFrontiers`), added purely so `Detector::enqueueVisualization` can rebuild the visualization state without `FrontierManager` depending on any visualization type.
 - **`FIS`** (`fis.hpp`/`.cpp`) — Frontier Information Structure: one clustered set of frontier cells plus its centroid, bounding box, and sampled viewpoints.
   - `sampleViewpoint` — randomly samples a point at a given horizontal radius/vertical offset around the cluster's center.
 - **Package-local `frontier_detection/utils.hpp`/`.cpp`** — small standalone helpers (`frontier_t` = `std::vector<octomap::point3d>`, `mean`, `getMinBound`, `getMaxBound`), distinct from and not to be confused with the shared `octomap_planner_utils` library.

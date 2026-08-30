@@ -2,7 +2,6 @@
 #define FRONTIER_DETECTION_FRONTIER_MANAGER_H
 
 
-#include <mrs_lib/batch_visualizer.h>
 #include <octomap/octomap.h>
 #include <octomap_msgs/Octomap.h>
 #include <ros/ros.h>
@@ -24,8 +23,6 @@ namespace frontier_detection
 class FrontierManager
 {
 private:
-  std::shared_ptr<mrs_lib::BatchVisualizer> bv_frontiers_;
-
   octomap_planner_utils::AABB zone_;
   octomap::OcTreeKey min_key_;
   octomap::OcTreeKey max_key_;
@@ -77,22 +74,26 @@ public:
   std::vector<octomap::point3d> invalidated_frontiers_;
   std::vector<octomap::point3d> added_frontiers_;
 
-  FrontierManager(const std::shared_ptr<mrs_lib::BatchVisualizer>&  bv_frontiers,
-                  double                                            free_space_diameter,
-                  int                                               min_frontier_size,
-                  int                                               min_svd_eigen_value,
-                  double                                            size_decrease_ratio,
-                  int                                               viewpoint_sample_attempts,
-                  double                                            viewpoint_sample_radius,
-                  double                                            viewpoint_sample_height,
-                  double                                            viewpoint_max_distance,
-                  double                                            viewpoint_max_angle,
-                  int                                               max_viewpoints_per_fr,
-                  int                                               min_coverage);
+  FrontierManager(double free_space_diameter,
+                  int    min_frontier_size,
+                  int    min_svd_eigen_value,
+                  double size_decrease_ratio,
+                  int    viewpoint_sample_attempts,
+                  double viewpoint_sample_radius,
+                  double viewpoint_sample_height,
+                  double viewpoint_max_distance,
+                  double viewpoint_max_angle,
+                  int    max_viewpoints_per_fr,
+                  int    min_coverage);
   ~FrontierManager();
 
   // full update pass for a new octomap: removes stale frontiers, BFS-extracts new frontier clusters from the given zone/start cell, and (re)samples their viewpoints
   void processNewMap(const std::shared_ptr<octomap::OcTree>& tree, octomap_planner_utils::AABB region, octomap::OcTreeKey start_key);
+
+  // minimum viewpoint coverage a viewpoint must retain to be considered valid (used by callers building their own visualization of fis_c_)
+  int minCoverage() const { return min_coverage_; }
+  // the current (possibly grown-to-cover-removed-frontiers) search zone, as last set by processNewMap
+  octomap_planner_utils::AABB currentZone() const { return zone_; }
 };
 
 } // namespace frontier_detection

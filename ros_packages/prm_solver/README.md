@@ -23,21 +23,26 @@
 
 ### Visualization output
 
-- `visualize_prm` — an `mrs_lib::BatchVisualizer` instance (topic prefix `visualize_prm`) that publishes the current PRM roadmap zone (as a translucent cuboid), all roadmap nodes (as points), and all node-to-node edges (as red rays), refreshed every `timerUpdate` tick.
+- `visualize_prm` — an `mrs_lib::BatchVisualizer` instance (topic prefix `visualize_prm`), owned entirely by `PRMNodelet` (`PRM` has no knowledge of it at all). Publishes the current PRM roadmap zone (as a translucent cuboid), all roadmap nodes (as points), and all node-to-node edges (as red rays). Built and published entirely from a dedicated background thread (`PRMNodelet::visualizationWorker`), decoupled from `timerUpdate` so the (comparatively expensive) marker construction never blocks roadmap maintenance.
 
 `addNode`/`updateZone` themselves are **not** exposed as services — they only run from the nodelet's own subscription callbacks and its own update timer, never called by `Explorer` or any other external node.
 
 ## 3. Important functions/classes
 
-- **`PRMNodelet`** (`src/prm_nodelet.cpp`) — the nodelet. Owns the `PRM` instance, all subscriptions, the update timer, and the `find_simplified_path` service; drives the `PRM` roadmap entirely from its own inputs.
-  - `onInit()` — loads parameters, sets up subscribers/service/visualizer, constructs the `PRM` instance.
-  - `callbackOctomap` — converts the incoming octomap message to an `OcTree` and stores it (mutexed) for the update timer.
-  - `timerUpdate` (rate: `timer_rates/update` in `config/prm_solver.yaml`) — snapshots the current octree, computes the local zone around the UAV, calls `PRM::updateZone`, republishes the roadmap visualization.
+- **`PRMNodelet`** (`src/prm_nodelet.cpp`) — the nodelet. Owns the `PRM` instance, all subscriptions, the update timer, the `find_simplified_path` service, and (unlike `PRM`) the `mrs_lib::BatchVisualizer` (`bv_prm_`) itself. Drives the `PRM` roadmap entirely from its own inputs, and keeps all `bv_prm_` marker construction + publish off the timer thread via a dedicated background thread (`vis_thread_`, started at the end of `onInit()`, joined in the `~PRMNodelet()` destructor) that is the *only* code touching `bv_prm_`/`bv_map_frame_set_`, so no locking is needed around them.
+  - `onInit()` — loads parameters, sets up subscribers/service/visualizer, constructs the `PRM` instance, starts `vis_thread_`.
+  - `~PRMNodelet()` — sets `vis_shutdown_`, notifies `vis_cv_`, and joins `vis_thread_`.
+  - `callbackOctomap` — converts the incoming octomap message to an `OcTree` and stores it (mutexed) for the update timer; no longer touches `bv_prm_` (that responsibility moved into the worker).
+  - `timerUpdate` (rate: `timer_rates/update` in `config/prm_solver.yaml`) — snapshots the current octree, computes the local zone around the UAV, calls `PRM::updateZone`, then hands off to `enqueueVisualization()` instead of publishing/clearing `bv_prm_` inline.
+  - `enqueueVisualization` — under the existing `mutex_prm_` lock, copies each roadmap node's position/neighbor positions out of `prm_->nodes_` plus `prm_->currentZone()` into a lightweight `VisualizationSnapshot` (one `NodeVis` per node), then hands it to the worker thread by setting `pending_vis_snapshot_` and notifying `vis_cv_`.
+  - `visualizationWorker` — runs on `vis_thread_` for the nodelet's entire lifetime: blocks on `vis_cv_` for the next `pending_vis_snapshot_`, then does all the `bv_prm_->addCuboid`/`addPoint`/`addRay` marker construction plus `publish()`/`clearBuffers()` for that snapshot (including the one-time `setParentFrame` call). Exits when `~PRMNodelet()` sets `vis_shutdown_` and notifies the condition variable.
   - `callbackFrontiers` — inserts a roadmap node at the first viewpoint of each frontier in every incoming `FrontierArray` message via `PRM::addNode`.
   - `callbackFindSimplifiedPath` — the `find_simplified_path_in` service handler; wraps `PRM::findSimplifiedPath`.
   - `getPosition` / `msgToMap` — small helpers for UAV pose lookup and octomap-message decoding.
-- **`PRM`** (`include/prm_solver/prm.hpp` + `src/prm.cpp`) — the roadmap/search class, independent of ROS nodelet machinery aside from `BatchVisualizer` and logging.
-  - `updateZone(tree, zone, map_update)` — ages/invalidates/removes roadmap nodes inside `zone` and resamples new ones to keep node density up to a volume-based budget; nodes with fewer neighbors are aged more slowly to preserve long-range connectivity. Called on every new map (`map_update=true`) and on the nodelet's own timer (`map_update=false`).
+- **`PRM`** (`include/prm_solver/prm.hpp` + `src/prm.cpp`) — the roadmap/search class, independent of ROS nodelet machinery aside from logging (`ROS_INFO`/`ROS_WARN`). It has no knowledge of visualization whatsoever — its constructor takes only the roadmap tunables (no `BatchVisualizer` parameter), and `updateZone` does no marker drawing/publishing; that responsibility belongs entirely to `PRMNodelet` now.
+  - `nodes_` — the roadmap's node vector (`std::vector<std::shared_ptr<node_t>>`), public rather than private specifically so external callers can build their own visualization snapshot from it, the same pattern as `FrontierManager::fis_c_` in `frontier_detection`.
+  - `updateZone(tree, zone, map_update)` — ages/invalidates/removes roadmap nodes inside `zone` and resamples new ones to keep node density up to a volume-based budget; nodes with fewer neighbors are aged more slowly to preserve long-range connectivity. Called on every new map (`map_update=true`) and on the nodelet's own timer (`map_update=false`); also stores `zone` as `zone_` for `currentZone()`.
+  - `currentZone()` — public getter returning the zone last passed to `updateZone()` (`zone_`), added purely so `PRMNodelet::enqueueVisualization` can rebuild the visualization state without `PRM` depending on any visualization type.
   - `addNode(position)` — inserts a new node at `position` (skipped if too close to an existing node) and wires it to nearby nodes that have a clear line of free space between them (up to `max_neighbors`).
   - `removeInvalidNodes()` — compacts the node vector, dropping nodes marked invalid and pruning dangling neighbor references.
   - `findCloseNodes(point, r)` — returns roadmap nodes within radius `r` of `point`, sorted nearest-first.

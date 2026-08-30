@@ -7,20 +7,18 @@
 namespace frontier_detection
 {
 
-FrontierManager::FrontierManager( const std::shared_ptr<mrs_lib::BatchVisualizer>&  bv_frontiers,
-                                  double                                            free_space_diameter,
-                                  int                                               min_frontier_size,
-                                  int                                               min_svd_eigen_value,
-                                  double                                            size_decrease_ratio,
-                                  int                                               viewpoint_sample_attempts,
-                                  double                                            viewpoint_sample_radius,
-                                  double                                            viewpoint_sample_height,
-                                  double                                            viewpoint_max_distance,
-                                  double                                            viewpoint_max_angle,
-                                  int                                               max_viewpoints_per_fr,
-                                  int                                               min_coverage)
+FrontierManager::FrontierManager( double free_space_diameter,
+                                  int    min_frontier_size,
+                                  int    min_svd_eigen_value,
+                                  double size_decrease_ratio,
+                                  int    viewpoint_sample_attempts,
+                                  double viewpoint_sample_radius,
+                                  double viewpoint_sample_height,
+                                  double viewpoint_max_distance,
+                                  double viewpoint_max_angle,
+                                  int    max_viewpoints_per_fr,
+                                  int    min_coverage)
 {
-  bv_frontiers_ = bv_frontiers;
   free_space_diameter_ = free_space_diameter;
   min_frontier_size_ = min_frontier_size;
   min_svd_eigen_value_ = min_svd_eigen_value;
@@ -410,7 +408,6 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     }
     viewable_frontier_cnt_ = 0;
 
-    int cidx = 0;
     for (auto& fis : fis_c_)
     {
       // ROS_ERROR("id %u is %s with %zu viewpoints and size %zu", fis->id_, fis->valid_  ? "valid" : "invalid", fis->viewpoints_.size(), fis->cellCnt());
@@ -448,41 +445,6 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
       }
 
       viewable_frontier_cnt_ += fis->viewpoints_.size() == 0 ? 0 : 1;
-
-      // draw frontiers in different colors
-      octomap_planner_utils::color_t color = octomap_planner_utils::getColor(cidx++);
-      bv_frontiers_->addPoint(Eigen::Vector3d(fis->center_.x(),fis->center_.y(),fis->center_.z()), color.r,color.g,color.b, 1.0);
-      for (auto &v : fis->viewpoints_)
-      {
-
-        if (v.coverage >= min_coverage_)
-        {
-          Eigen::Vector3d           center(v.position.x(), v.position.y(), v.position.z());
-          double                    cube_scale  = tree_->getResolution() * (v.position == fis->viewpoints_[0].position ? 0.6 : 0.2);
-          Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
-          Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
-          mrs_lib::geometry::Cuboid c(center, size, orientation);
-          bv_frontiers_->addCuboid( c,  color.r,color.g,color.b, 1.0, true);
-        }
-      }
-
-      for (auto &cell : fis->cells_)
-      {
-        Eigen::Vector3d           center(cell.x(), cell.y(), cell.z());
-        double                    cube_scale  = tree_->getResolution() * 0.5;
-        Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
-        Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
-        mrs_lib::geometry::Cuboid c(center, size, orientation);
-        bv_frontiers_->addCuboid( c, color.r,color.g,color.b, 0.1, true);
-      }
-    }
-
-    {
-      Eigen::Vector3d           center((zone_.min.x() + zone_.max.x()) / 2.0, (zone_.min.y() + zone_.max.y()) / 2.0, (zone_.min.z() + zone_.max.z()) / 2.0);
-      Eigen::Vector3d           size(zone_.max.x() - zone_.min.x(), zone_.max.y() - zone_.min.y(), zone_.max.z() - zone_.min.z());
-      Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
-      mrs_lib::geometry::Cuboid c(center, size, orientation);
-      bv_frontiers_->addCuboid(c, 1.0, 1.0, 1.0, 1.0, false);
     }
 
     ROS_INFO("[FrontierDetection]: final frontier count: %zu/%zu/%zu (total/inv/add)", fis_c_.size(), invalidated_frontiers_.size(), added_frontiers_.size());

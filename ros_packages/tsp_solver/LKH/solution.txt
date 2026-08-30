@@ -1,35 +1,59 @@
-NAME : global.867.tour
-COMMENT : Length = 867
-COMMENT : Found by LKH [Keld Helsgaun] Sun Aug 30 14:43:31 2026
+NAME : global.1539.tour
+COMMENT : Length = 1539
+COMMENT : Found by LKH [Keld Helsgaun] Sun Aug 30 15:24:50 2026
 TYPE : TOUR
-DIMENSION : 27
+DIMENSION : 51
 TOUR_SECTION
 1
+46
+44
+45
+48
+41
+50
+49
+47
+51
+43
+42
+40
+39
+38
+34
+35
+36
+37
+32
+29
+28
+31
 27
+30
 25
-24
 26
-23
-21
-20
 22
-19
-5
-18
-10
 17
 16
-15
-13
 14
+13
+15
+24
+23
+33
+21
+20
+18
+19
+10
 12
 11
+2
 9
 8
 7
-2
-6
 4
+6
 3
+5
 -1
 EOF
