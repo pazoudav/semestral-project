@@ -28,20 +28,19 @@ remaps used at runtime.
 |---|---|---|---|
 | `~octomap_points_in` | `octomap_global_vis/octomap_point_cloud_centers` | `sensor_msgs/PointCloud2` | Live octomap point cloud; triggers the ROSA pipeline. |
 | `~source_skeleton_in` | `/source_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | Prerecorded "source" skeleton, replayed manually (see `tmux/session.yml`, outside this package), used as the RANSAC alignment reference. |
-| `~target_skeleton_in` | `/rosa_vis/rr_lines` | `visualization_msgs/Marker` (LINE_LIST) | The live skeleton this node itself just published on `~skeleton_lines_out`; triggers RANSAC alignment against the source skeleton. |
+| `~target_skeleton_in` | `~/extracted_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The live skeleton this node itself just published on `~skeleton_lines_out`; triggers RANSAC alignment against the source skeleton. |
 | `~source_viewpoints_in` | `/source_viewpoints` | `visualization_msgs/MarkerArray` | Prerecorded candidate viewpoints associated with the source skeleton. |
 
 ### Published
 
 | Topic (private name) | Remapped to | Type | Purpose |
 |---|---|---|---|
-| `~input_cloud_out` | `/rosa_vis/input_cloud` | `sensor_msgs/PointCloud2` | Debug: the filtered cloud fed into the ROSA pipeline. |
-| `~skeleton_points_out` | `/rosa_vis/rr_pts` | `sensor_msgs/PointCloud2` | The ROSA result's referenced vertices, as points. |
-| `~skeleton_lines_out` | `/rosa_vis/rr_lines` | `visualization_msgs/Marker` (LINE_LIST) | The ROSA skeleton edges — the main output. This is the absolute topic `mrs_octomap_planner`'s `Explorer::targetSkeletonCallback` listens to as `target_skeleton_in`, and this node's own `~target_skeleton_in` also loops back through it. |
-| `~skeleton_vertex_ids_out` | `/rosa_vis/vertex_ID` | `visualization_msgs/MarkerArray` (TEXT_VIEW_FACING) | Debug: per-vertex ID text markers, reimplemented locally instead of depending on FC-Planner's `traj_utils::PlanningVisualization`. |
-| `~transformed_skeleton_out` | `transformed_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The source skeleton's line points, transformed by the RANSAC alignment `T` into the target/live frame. |
-| `~ransac_skeleton_out` | `ransaced_skeleton` | `visualization_msgs/Marker` | Advertised but not currently published to from any callback in this package. |
-| `~candidate_viewpoints_out` | `candidate_viewpoints` | `sensor_msgs/PointCloud2` | The source's candidate viewpoints, transformed by `T` into the live frame — feeds `Explorer`'s skeleton-guided viewpoint sampling. |
+| `~input_cloud_out` | `~/input_cloud` | `sensor_msgs/PointCloud2` | Debug: the filtered cloud fed into the ROSA pipeline. |
+| `~skeleton_points_out` | `~/skeleton_points` | `sensor_msgs/PointCloud2` | The ROSA result's referenced vertices, as points. |
+| `~skeleton_lines_out` | `~/extracted_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The ROSA skeleton edges — the main output. This is the absolute topic `mrs_octomap_planner`'s `Explorer::targetSkeletonCallback` listens to as `target_skeleton_in`, and this node's own `~target_skeleton_in` also loops back through it. |
+| `~skeleton_vertex_ids_out` | `~/skeleton_vertex_ids` | `visualization_msgs/MarkerArray` (TEXT_VIEW_FACING) | Debug: per-vertex ID text markers, reimplemented locally instead of depending on FC-Planner's `traj_utils::PlanningVisualization`. |
+| `~transformed_skeleton_out` | `~/transformed_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The source skeleton's line points, transformed by the RANSAC alignment `T` into the target/live frame. |
+| `~candidate_viewpoints_out` | `~/candidate_viewpoints` | `sensor_msgs/PointCloud2` | The source's candidate viewpoints, transformed by `T` into the live frame — feeds `tsp_solver`'s `~candidate_viewpoints_in` (remapped to `skeleton_estimator/candidate_viewpoints`), though that callback currently returns immediately without consuming it. |
 
 ## Important functions/classes
 

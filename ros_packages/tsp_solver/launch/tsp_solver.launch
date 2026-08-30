@@ -25,8 +25,8 @@
       <rosparam file="$(find tsp_solver)/config/tsp_solver.yaml" command="load" />
 
       <!-- topics in -->
-      <remap from="~frontiers_in" to="frontier_detection/frontiers" />
-      <remap from="~candidate_viewpoints_in" to="candidate_viewpoints" />
+      <remap from="~frontiers_in" to="frontier_detector/frontiers" />
+      <remap from="~candidate_viewpoints_in" to="skeleton_estimator/candidate_viewpoints" />
 
       <!-- services in -->
       <remap from="~set_start_in" to="~set_start" />

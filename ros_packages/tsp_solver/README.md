@@ -18,7 +18,7 @@ an ordered tour, which it then hands to `prm_solver` in chunks to get a flyable 
 | Topic (private name) | Remap (launch) | Type | Purpose |
 |---|---|---|---|
 | `~frontiers_in` | `frontier_detection/frontiers` | `frontier_detection/FrontierArray` | Keeps the internal distance graph (`TSPsolver::dist_map_`) in sync via `syncFrontiers()`. |
-| `~candidate_viewpoints_in` | `candidate_viewpoints` | `sensor_msgs/PointCloud2` | Intended to feed `TSPsolver::setKDtreeInput()` with skeleton-derived guiding viewpoints; the callback (`Solver::callbackCandidateViewpoints`) currently returns immediately after the initialization check, so this path is effectively a no-op at runtime. |
+| `~candidate_viewpoints_in` | `skeleton_estimator/candidate_viewpoints` | `sensor_msgs/PointCloud2` | Intended to feed `TSPsolver::setKDtreeInput()` with skeleton-derived guiding viewpoints; the callback (`Solver::callbackCandidateViewpoints`) currently returns immediately after the initialization check, so this path is effectively a no-op at runtime. |
 
 ### Services
 

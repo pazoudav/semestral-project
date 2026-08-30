@@ -333,7 +333,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /uav1/detector/visualize_frontiers
+          Marker Topic: /uav1/frontier_detector/visualize_frontiers
           Name: visualize_frontiers
           Namespaces:
             visualize_frontiers_lines: true
@@ -649,7 +649,7 @@ Visualization Manager:
           Value: false
         - Class: rviz/Marker
           Enabled: true
-          Marker Topic: /rosa_vis/rr_lines
+          Marker Topic: /uav1/skeleton_estimator/extracted_skeleton
           Name: edges
           Namespaces:
             {}
@@ -657,7 +657,7 @@ Visualization Manager:
           Value: false
         - Class: rviz/Marker
           Enabled: true
-          Marker Topic: /uav1/transformed_skeleton
+          Marker Topic: /uav1/skeleton_estimator/transformed_skeleton
           Name: transfomed_skeleton
           Namespaces:
             {}
@@ -686,22 +686,14 @@ Visualization Manager:
           Size (Pixels): 3
           Size (m): 0.6000000238418579
           Style: Spheres
-          Topic: /uav1/candidate_viewpoints
+          Topic: /uav1/skeleton_estimator/candidate_viewpoints
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
-        - Class: rviz/Marker
-          Enabled: true
-          Marker Topic: /uav1/ransaced_skeleton
-          Name: ransac_skeleton
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /rosa_vis/vertex_ID
+          Marker Topic: /uav1/skeleton_estimator/skeleton_vertex_ids
           Name: vertexID
           Namespaces:
             vertex_ID: true
@@ -778,7 +770,7 @@ Visualization Manager:
           Size (Pixels): 3
           Size (m): 0.6000000238418579
           Style: Spheres
-          Topic: /rosa_vis/input_cloud
+          Topic: /uav1/skeleton_estimator/input_cloud
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: true

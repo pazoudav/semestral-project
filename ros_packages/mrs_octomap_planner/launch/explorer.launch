@@ -34,16 +34,8 @@
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
       <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
-      <remap from="~frontiers_in" to="frontier_detection/frontiers" />
+      <remap from="~frontiers_in" to="frontier_detector/frontiers" />
 
-
-      <!-- topics out -->
-      <remap from="~big_octomap_out" to="big_octomap" />
-
-      <!-- services in -->
-
-      <remap from="~get_path_in" to="~get_path" />
-      <remap from="~explore_in" to="~explore" />
 
       <!-- services out -->
       <remap from="~reference_out" to="control_manager/reference" />

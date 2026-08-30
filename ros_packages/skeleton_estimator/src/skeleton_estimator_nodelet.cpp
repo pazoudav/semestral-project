@@ -81,7 +81,6 @@ private:
   mrs_lib::SubscribeHandler<visualization_msgs::MarkerArray> sh_source_viewpoints_;
 
   ros::Publisher pub_transfomed_skeleton_;
-  ros::Publisher pub_ransac_skeleton_;
   ros::Publisher pub_candidate_viewpoints_;
 
   void sourceViewpointsCallback(const visualization_msgs::MarkerArray::ConstPtr msg);
@@ -143,7 +142,6 @@ void SkeletonEstimator::onInit()
   pub_skeleton_lines_      = nh_.advertise<visualization_msgs::Marker>("skeleton_lines_out", 1);
   pub_skeleton_vertex_ids_ = nh_.advertise<visualization_msgs::MarkerArray>("skeleton_vertex_ids_out", 1);
   pub_transfomed_skeleton_  = nh_.advertise<visualization_msgs::Marker>("transformed_skeleton_out", 1);
-  pub_ransac_skeleton_      = nh_.advertise<visualization_msgs::Marker>("ransac_skeleton_out", 1);
   pub_candidate_viewpoints_ = nh_.advertise<sensor_msgs::PointCloud2>("candidate_viewpoints_out", 1);
 
   source_cloud_                = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();

@@ -22,7 +22,6 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 | Private name | Remapped to | Type | Notes |
 |---|---|---|---|
 | `~reference_out` | *(not remapped in `explorer.launch`)* | `mrs_msgs/ReferenceStamped` | advertised in `onInit()` but never actually published to — dead output |
-| `~big_octomap_out` | `big_octomap` | `visualization_msgs/MarkerArray` | advertised in `onInit()` but never actually published to — dead output |
 | `visualize_path` (via `mrs_lib::BatchVisualizer bv_path_`) | — | `visualization_msgs/Marker`/`MarkerArray` (BatchVisualizer) | debug rays for the assembled local path (magenta, in `timerPath`) and the global TSP tour (green, in `makePath`) |
 
 ### Services called (client)
@@ -35,12 +34,7 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 | `~solve_out` | `tsp_solver/solve` | `tsp_solver/Solve` | `makePath()` — requests the ordered global viewpoint tour from `tsp_solver` |
 | `~find_simplified_path_out` | `prm_solver/find_simplified_path` | `prm_solver/FindSimplifiedPath` | `makePath()` — requests a flyable, simplified sub-path per tour segment from `prm_solver` |
 
-### Services advertised (server)
-
-| Private name | Remapped to | Type | Notes |
-|---|---|---|---|
-| `~get_path_in` | `~get_path` | `mrs_octomap_planner/Path` (see [`srv/Path.srv`](srv/Path.srv)) | `callbackGetPath` — currently unimplemented stub, always returns `false` |
-| `~explore_in` | `~explore` | `std_srvs/Trigger` | `callbackExplore` — currently unimplemented stub, always returns `true` with no side effects |
+`Explorer` advertises no services of its own — it is purely a service *client* of `tsp_solver`/`prm_solver`/the MRS trajectory-generation stack.
 
 ## 3. State machine
 
@@ -67,7 +61,6 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 - **`getPosition()`** — returns the current UAV position in the octree frame, delegating to `octomap_planner_utils::getPosition`.
 - **`msgToMap()`** — deserializes an `octomap_msgs/Octomap` (binary or full) into an `OcTree_t`.
 - **`changeState()`** — logs and sets `state_`; see State machine section above — effectively just a diagnostic label in the current code.
-- **`callbackGetPath()` / `callbackExplore()`** — service handler stubs (`~get_path_in`, `~explore_in`); both currently unimplemented.
 - **`controlManagerDiagCallback()`** — diagnostics callback; currently a no-op besides the init guard.
 - **`timeoutTrackerCmd()` / `timeoutOctomap()`** — `SubscribeHandler` timeout callbacks; log a throttled warning when the respective topic goes stale.
 
@@ -80,8 +73,6 @@ mrs_octomap_planner/
 ├── nodelets.xml                          # exports mrs_octomap_planner/Explorer; an older OctomapPlanner class entry is commented out
 ├── LICENSE
 ├── README.md
-├── srv/
-│   └── Path.srv                          # request: start/end Point; response: path Point[], success, message
 ├── launch/
 │   └── explorer.launch                   # launches the Explorer nodelet, loads explorer.yaml, sets up all remaps
 ├── config/
@@ -107,14 +98,13 @@ The `pmm/` sources/headers are a vendored "piecewise minimum-time trajectory" li
 
 ## 6. Dependencies
 
-From `package.xml`/`CMakeLists.txt` (build-time, catkin):
+From `package.xml`/`CMakeLists.txt` (build-time, catkin). The package defines no `msg`/`srv`/`action` files of its own (the former `srv/Path.srv` and its `message_generation`/`message_runtime` dependencies were removed along with the dead `~get_path_in` service):
 
 - `mrs_lib`, `mrs_msgs`, `mrs_modules_msgs` — MRS UAV stack core: `BatchVisualizer`, `ParamLoader`, `SubscribeHandler`, `Transformer`, `ServiceClientHandler`, and message types (`TrackerCommand`, `ControlManagerDiagnostics`, `TrajectoryReference*`, `GetPathSrv`, etc.)
 - `mrs_subt_planning_lib`, `mrs_octomap_tools` — external MRS repos; `mrs_octomap_tools/octomap_methods.h` is included by `explorer.cpp`
 - `octomap_msgs`, `octomap_ros`, plus `find_package(octomap REQUIRED)` and `find_package(dynamicEDT3D REQUIRED)` — octomap representation/conversion
 - `nodelet`, `roscpp`, `rospy`, `pluginlib` (via `PLUGINLIB_EXPORT_CLASS`) — nodelet plumbing
 - `nav_msgs`, `std_msgs`, `geometry_msgs`, `visualization_msgs`, `sensor_msgs` — standard ROS message types
-- `message_generation`/`message_runtime` — generates `Path.srv`
 - `Eigen3` (`find_package(Eigen3 REQUIRED)`) — used via `mrs_lib::geometry::Ray`/`BatchVisualizer` calls in `explorer.cpp`
 - `octomap_planner_utils` — this project's own shared geometry/octomap helper library; `explorer.cpp` fully qualifies every call with the `octomap_planner_utils::` prefix (`isFreeSpace`, `getPosition`, etc.)
 - `frontier_detection` — declared as a build dependency for its `FrontierArray` message type, consumed on `~frontiers_in`

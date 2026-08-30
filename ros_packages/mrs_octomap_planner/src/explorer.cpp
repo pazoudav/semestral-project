@@ -1,7 +1,6 @@
 
 #include <ros/ros.h>
 #include <nodelet/nodelet.h>
-#include <std_srvs/Trigger.h>
 
 #include <mrs_lib/batch_visualizer.h>
 #include <mrs_lib/mutex.h>
@@ -18,12 +17,10 @@
 #include <mrs_msgs/TrajectoryReferenceSrv.h>
 #include <mrs_msgs/GetPathSrv.h>
 
-#include <mrs_octomap_planner/Path.h>
 #include <mrs_octomap_tools/octomap_methods.h>
 #include <octomap/octomap.h>
 #include <octomap_msgs/Octomap.h>
 #include <visualization_msgs/Marker.h>
-#include <visualization_msgs/MarkerArray.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -125,7 +122,6 @@ namespace mrs_octomap_planner
 
     // publishers
     ros::Publisher pub_reference_;
-    ros::Publisher pub_big_ocotmap_;
     mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>             sc_get_trajectory_;
     mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv> sc_trajectory_reference_;
     mrs_lib::ServiceClientHandler<tsp_solver::SetStart>             sc_tsp_set_start_;
@@ -142,17 +138,6 @@ namespace mrs_octomap_planner
     void callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg);
     void controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg);
 
-
-    // service servers
-    ros::ServiceServer service_server_get_path_;
-    ros::ServiceServer service_server_explore_;
-
-    // service server callbacks
-    bool callbackGetPath(mrs_octomap_planner::Path::Request&  req,
-                         mrs_octomap_planner::Path::Response& res);
-
-    bool callbackExplore(std_srvs::Trigger::Request& req,
-                         std_srvs::Trigger::Response& res);
 
     // timers
     ros::Timer timer_main_;
@@ -225,12 +210,7 @@ namespace mrs_octomap_planner
     sh_control_manager_diag_  = mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>(shopts, "diagnostics_in", &Explorer::controlManagerDiagCallback, this);
     sh_frontiers_             = mrs_lib::SubscribeHandler<frontier_detection::FrontierArray>(shopts, "frontiers_in", &Explorer::callbackFrontiers, this);
 
-    service_server_get_path_ = nh_.advertiseService("get_path_in", &Explorer::callbackGetPath, this);
-    service_server_explore_= nh_.advertiseService("explore_in", &Explorer::callbackExplore, this);
-
-
     pub_reference_            = nh_.advertise<mrs_msgs::ReferenceStamped>("reference_out", 1);
-    pub_big_ocotmap_          = nh_.advertise<visualization_msgs::MarkerArray>("big_octomap_out", 1);
 
     sc_get_trajectory_            = mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>(nh_, "trajectory_generation_out");
     sc_trajectory_reference_      = mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv>(nh_, "trajectory_reference_out");
@@ -776,30 +756,6 @@ if (!is_initialized_){
 
       // }
 }
-
-// service handler for ~explore_in (std_srvs/Trigger); currently unimplemented — just checks init state and reports success, no actual side effects
-bool Explorer::callbackExplore(std_srvs::Trigger::Request& req,
-                        std_srvs::Trigger::Response& res)
-{
-  if (!is_initialized_) {
-    return false;
-  }
-  return true;
-
-
-}
-
-
-
-
-
-// service handler for ~get_path_in (mrs_octomap_planner/Path); currently unimplemented — always returns false without populating res
-bool Explorer::callbackGetPath(mrs_octomap_planner::Path::Request&  req,
-                                              mrs_octomap_planner::Path::Response& res)
-  {
-
-    return false;
-  }
 
 
 }

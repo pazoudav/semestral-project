@@ -30,17 +30,16 @@
       <!-- topics in -->
       <remap from="~octomap_points_in" to="octomap_global_vis/octomap_point_cloud_centers" />
       <remap from="~source_skeleton_in" to="/source_skeleton" />
-      <remap from="~target_skeleton_in" to="/rosa_vis/rr_lines" />
       <remap from="~source_viewpoints_in" to="/source_viewpoints" />
+      <remap from="~target_skeleton_in" to="~/extracted_skeleton" />
 
       <!-- topics out -->
-      <remap from="~input_cloud_out" to="/rosa_vis/input_cloud" />
-      <remap from="~skeleton_points_out" to="/rosa_vis/rr_pts" />
-      <remap from="~skeleton_lines_out" to="/rosa_vis/rr_lines" />
-      <remap from="~skeleton_vertex_ids_out" to="/rosa_vis/vertex_ID" />
-      <remap from="~transformed_skeleton_out" to="transformed_skeleton" />
-      <remap from="~ransac_skeleton_out" to="ransaced_skeleton" />
-      <remap from="~candidate_viewpoints_out" to="candidate_viewpoints" />
+      <remap from="~input_cloud_out" to="~/input_cloud" />
+      <remap from="~skeleton_points_out" to="~/skeleton_points" />
+      <remap from="~skeleton_lines_out" to="~/extracted_skeleton" />
+      <remap from="~skeleton_vertex_ids_out" to="~/skeleton_vertex_ids" />
+      <remap from="~transformed_skeleton_out" to="~/transformed_skeleton" />
+      <remap from="~candidate_viewpoints_out" to="~/candidate_viewpoints" />
 
     </node>
 

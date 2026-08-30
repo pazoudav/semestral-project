@@ -28,7 +28,6 @@ set(CATKIN_DEPENDENCIES
   rospy
   std_msgs
   geometry_msgs
-  message_generation
   visualization_msgs
   sensor_msgs
   frontier_detection
@@ -55,21 +54,11 @@ find_package(Eigen3 REQUIRED)
 set(Eigen_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
 set(Eigen_LIBRARIES ${Eigen_LIBRARIES})
 
-add_service_files(FILES
-  Path.srv
-)
-
-## Generate added messages and services with any dependencies listed here
-generate_messages(DEPENDENCIES
-  std_msgs
-  geometry_msgs
-)
-
 catkin_package(
   INCLUDE_DIRS include
   CATKIN_DEPENDS ${CATKIN_DEPENDENCIES}
   LIBRARIES ${LIBRARIES}
-  DEPENDS OCTOMAP message_runtime
+  DEPENDS OCTOMAP
   )
 
 include_directories(SYSTEM

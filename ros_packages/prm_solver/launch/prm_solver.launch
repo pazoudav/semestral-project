@@ -38,7 +38,7 @@
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
       <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
-      <remap from="~frontiers_in" to="frontier_detection/frontiers" />
+      <remap from="~frontiers_in" to="frontier_detector/frontiers" />
 
       <!-- services in -->
       <remap from="~find_simplified_path_in" to="~find_simplified_path" />

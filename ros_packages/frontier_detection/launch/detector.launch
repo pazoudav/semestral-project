@@ -26,7 +26,7 @@
 
   <group ns="$(arg UAV_NAME)">
 
-    <node pkg="nodelet" type="nodelet" name="detector" args="$(arg nodelet) frontier_detection/Detector $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
+    <node pkg="nodelet" type="nodelet" name="frontier_detector" args="$(arg nodelet) frontier_detection/Detector $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
       <rosparam file="$(find frontier_detection)/config/detector.yaml" command="load" />
 
@@ -42,7 +42,7 @@
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
 
       <!-- topics out -->
-      <remap from="~frontiers_out" to="frontier_detection/frontiers" />
+      <remap from="~frontiers_out" to="~/frontiers" />
 
     </node>
 
