@@ -22,6 +22,8 @@
 #include <optional>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <condition_variable>
 
 
 namespace prm_solver
@@ -31,10 +33,29 @@ namespace prm_solver
   using OcTreeSharedPtr_t = std::shared_ptr<octomap::OcTree>;
 
 
+  // one roadmap node's worth of drawing data, copied out of PRM so the visualization worker never touches PRM's own state
+  struct NodeVis
+  {
+    octomap::point3d              position;
+    std::vector<octomap::point3d> neighbor_positions;
+  };
+
+  // a full, self-contained snapshot of what bv_prm_ should currently show; built cheaply on the timer thread (under
+  // mutex_prm_) and handed off to the visualization worker thread, which does the (comparatively expensive) marker
+  // construction + publish
+  struct VisualizationSnapshot
+  {
+    std::string                 frame_id;
+    octomap_planner_utils::AABB zone;
+    std::vector<NodeVis>        nodes;
+  };
+
+
   class PRMNodelet : public nodelet::Nodelet
   {
     public:
       virtual void onInit();
+      ~PRMNodelet();
 
     private:
       ros::NodeHandle nh_;
@@ -77,6 +98,14 @@ namespace prm_solver
       std::unique_ptr<PRM>                  prm_;
       std::unique_ptr<mrs_lib::Transformer> transformer_;
 
+      // background visualization worker: keeps all bv_prm_ marker construction + publish() off the timer thread.
+      // only ever touched by visualizationWorker() itself once started, so bv_prm_/bv_map_frame_set_ need no locking there.
+      std::thread             vis_thread_;
+      std::mutex              vis_mutex_;
+      std::condition_variable vis_cv_;
+      std::optional<VisualizationSnapshot> pending_vis_snapshot_;
+      bool                     vis_shutdown_ = false;
+
       mrs_lib::SubscribeHandler<octomap_msgs::Octomap>                sh_octomap_;
       mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>              sh_tracker_cmd_;
       mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>   sh_control_manager_diag_;
@@ -99,6 +128,11 @@ namespace prm_solver
 
       std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> getPosition();
       std::optional<OcTreeSharedPtr_t>                                 msgToMap(const octomap_msgs::OctomapConstPtr octomap);
+
+      // copies the current roadmap state (under mutex_prm_) into a VisualizationSnapshot and hands it to the visualization worker
+      void enqueueVisualization();
+      // background loop: waits for a new snapshot, then draws it into bv_prm_ and publishes/clears it
+      void visualizationWorker();
   };
 
 
@@ -168,8 +202,7 @@ namespace prm_solver
     bv_prm_->setPointsScale(_scale_points_);
     bv_prm_->setLinesScale(_scale_lines_/2.0);
 
-    prm_ = std::make_unique<PRM>(bv_prm_,
-                                  _free_space_dia_,
+    prm_ = std::make_unique<PRM>(_free_space_dia_,
                                   _ovelap_coefficient_,
                                   _resample_factor_,
                                   _node_max_age_,
@@ -186,8 +219,22 @@ namespace prm_solver
     map_ready_ = false;
     map_updated_ = false;
 
+    vis_thread_ = std::thread(&PRMNodelet::visualizationWorker, this);
+
     is_initialized_ = true;
     ROS_INFO("[PRMNodelet]: initialized!");
+  }
+
+  PRMNodelet::~PRMNodelet()
+  {
+    {
+      std::scoped_lock lock(vis_mutex_);
+      vis_shutdown_ = true;
+    }
+    vis_cv_.notify_all();
+    if (vis_thread_.joinable()) {
+      vis_thread_.join();
+    }
   }
 
   // octomap subscription callback: converts the incoming message to an OcTree and stores it (mutexed) for the update timer to consume
@@ -208,11 +255,6 @@ namespace prm_solver
 
     mrs_lib::set_mutexed(mutex_octree_, octree_local.value(), octree_);
     mrs_lib::set_mutexed(mutex_octree_, msg->header.frame_id, octree_frame_);
-
-    if (!bv_map_frame_set_) {
-      bv_prm_->setParentFrame(msg->header.frame_id);
-      bv_map_frame_set_ = true;
-    }
 
     map_ready_   = true;
     map_updated_ = true;
@@ -253,11 +295,11 @@ namespace prm_solver
       prm_->updateZone(tree, local_zone, map_update);
     }
 
-    bv_prm_->publish();
-    bv_prm_->clearBuffers();
-
     ROS_INFO("[PRMNodelet]: timer end");
+
+    enqueueVisualization();    
   }
+
 
   // frontiers subscription callback: for every frontier in the message (not just newly-added ones), calls PRM::addNode on its first viewpoint, adding/deduplicating a roadmap node there
   void PRMNodelet::callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg)
@@ -363,6 +405,84 @@ namespace prm_solver
     }
     else {
       return { OcTreeSharedPtr_t(dynamic_cast<OcTree_t*>(abstract_tree)) };
+    }
+  }
+
+
+  void PRMNodelet::enqueueVisualization()
+  {
+    VisualizationSnapshot snapshot;
+    snapshot.frame_id = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+
+    {
+      std::scoped_lock lock(mutex_prm_);
+      snapshot.zone = prm_->currentZone();
+
+      for (auto &node : prm_->nodes_)
+      {
+        NodeVis nv;
+        nv.position = node->position;
+        for (auto &neighbor_p : node->neighbors)
+        {
+          if (auto neighbor = neighbor_p.lock()) {
+            nv.neighbor_positions.push_back(neighbor->position);
+          }
+        }
+        snapshot.nodes.push_back(std::move(nv));
+      }
+    }
+
+    {
+      std::scoped_lock lock(vis_mutex_);
+      pending_vis_snapshot_ = std::move(snapshot);
+    }
+    vis_cv_.notify_one();
+  }
+
+  // runs on its own thread for the lifetime of the nodelet: waits for a fresh snapshot, then does all the (comparatively
+  // expensive) BatchVisualizer marker construction + publish/clearBuffers, keeping it off the timer thread.
+  // bv_prm_/bv_map_frame_set_ are only ever touched from this thread, so no locking is needed around them here.
+  void PRMNodelet::visualizationWorker()
+  {
+    while (true)
+    {
+      VisualizationSnapshot snapshot;
+      {
+        std::unique_lock lock(vis_mutex_);
+        vis_cv_.wait(lock, [this] { return vis_shutdown_ || pending_vis_snapshot_.has_value(); });
+        if (vis_shutdown_) {
+          return;
+        }
+        snapshot = std::move(pending_vis_snapshot_.value());
+        pending_vis_snapshot_.reset();
+      }
+
+      if (!bv_map_frame_set_) {
+        bv_prm_->setParentFrame(snapshot.frame_id);
+        bv_map_frame_set_ = true;
+      }
+
+      Eigen::Vector3d           z_min(snapshot.zone.min.x(), snapshot.zone.min.y(), snapshot.zone.min.z());
+      Eigen::Vector3d           z_max(snapshot.zone.max.x(), snapshot.zone.max.y(), snapshot.zone.max.z());
+      Eigen::Vector3d           center = (z_min+z_max)/2.0;
+      Eigen::Vector3d           size   = (z_max-z_min);
+      Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+      mrs_lib::geometry::Cuboid c(center, size, orientation);
+      bv_prm_->addCuboid(c, 0.9, 0.1, 0.1, 0.1, true);
+
+      for (auto &node : snapshot.nodes)
+      {
+        bv_prm_->addPoint(Eigen::Vector3d(node.position.x(), node.position.y(), node.position.z()));
+        for (auto &neighbor_pos : node.neighbor_positions)
+        {
+          bv_prm_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(node.position.x(), node.position.y(), node.position.z()),
+                                                  Eigen::Vector3d(neighbor_pos.x(), neighbor_pos.y(), neighbor_pos.z())),
+                                                  1.0, 0.0, 0.0, 0.1);
+        }
+      }
+
+      bv_prm_->publish();
+      bv_prm_->clearBuffers();
     }
   }
 

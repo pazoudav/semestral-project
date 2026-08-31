@@ -1,7 +1,6 @@
 #ifndef PRM_H
 #define PRM_H
 
-#include <mrs_lib/batch_visualizer.h>
 #include <octomap/octomap.h>
 #include <octomap_msgs/Octomap.h>
 #include <ros/ros.h>
@@ -70,7 +69,6 @@ struct customLess
 class PRM
 {
 private:
-  std::vector<std::shared_ptr<node_t>> nodes_;
   float resample_factor_ ;
   int node_cnt_;
   float max_cost_;
@@ -82,9 +80,9 @@ private:
   double max_neighbor_distance_;
   double min_node_distance_;
   Eigen::MatrixXd cost_matrix_;
-  std::shared_ptr<mrs_lib::BatchVisualizer> bv_prm_;
   std::shared_ptr<octomap::OcTree> tree_;
   std::vector<bool> frozen_path_;
+  octomap_planner_utils::AABB zone_;
 
   // void removeNode(node_t* node);
   // sweeps nodes marked invalid (dead neighbor refs pruned first), compacting the vector in place
@@ -97,15 +95,17 @@ private:
 
 
 public:
-  PRM(std::shared_ptr<mrs_lib::BatchVisualizer> bv_planner,
-      double                                    free_space_diameter,
-      double                                    overlap_coefficient,
-      double                                    resample_factor,
-      int                                       node_max_age,
-      int                                       max_neighbors,
-      double                                    min_neighbor_distance,
-      double                                    max_neighbor_distance,
-      double                                    min_node_distance);
+  // public for callers building their own visualization of the roadmap (see prm_solver::PRMNodelet)
+  std::vector<std::shared_ptr<node_t>> nodes_;
+
+  PRM(double free_space_diameter,
+      double overlap_coefficient,
+      double resample_factor,
+      int    node_max_age,
+      int    max_neighbors,
+      double min_neighbor_distance,
+      double max_neighbor_distance,
+      double min_node_distance);
   PRM();
   ~PRM();
 
@@ -126,6 +126,9 @@ public:
   // dead/unused: computes path length/height-change/angle-change/velocity-change stats along a simplified findPath() route; not called anywhere
   octomap_planner_utils::path_info_t extraDistance(octomap::point3d start, octomap::point3d goal);
   // void freezePath();
+
+  // the zone last passed to updateZone() (used by callers building their own visualization of nodes_)
+  octomap_planner_utils::AABB currentZone() const { return zone_; }
 };
 }
 

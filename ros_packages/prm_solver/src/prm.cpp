@@ -12,17 +12,15 @@ namespace prm_solver
 
 PRM::PRM(){};
 
-PRM::PRM( std::shared_ptr<mrs_lib::BatchVisualizer> bv_planner,
-          double                                    free_space_diameter,
-          double                                    overlap_coefficient,
-          double                                    resample_factor,
-          int                                       node_max_age,
-          int                                       max_neighbors,
-          double                                    min_neighbor_distance,
-          double                                    max_neighbor_distance,
-          double                                    min_node_distance)
+PRM::PRM( double free_space_diameter,
+          double overlap_coefficient,
+          double resample_factor,
+          int    node_max_age,
+          int    max_neighbors,
+          double min_neighbor_distance,
+          double max_neighbor_distance,
+          double min_node_distance)
 {
-  bv_prm_ = bv_planner;
   cost_matrix_ = Eigen::MatrixXd(32,32);
   nodes_ = std::vector<std::shared_ptr<node_t>>(0);
   node_cnt_ = 0;
@@ -47,6 +45,7 @@ PRM::~PRM()
 void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, octomap_planner_utils::AABB zone, bool map_update)
 {
   tree_ = tree;
+  zone_ = zone;
   float sample_cnt = resample_factor_*octomap_planner_utils::volume(zone); // sample based on volume of space that is  theoreticly visible by lidar
   int invalids = 0;
 
@@ -81,25 +80,6 @@ void PRM::updateZone(const std::shared_ptr<octomap::OcTree>& tree, octomap_plann
       addNode(sample);
     }
     i++;
-  }
-
-  Eigen::Vector3d           z_min(zone.min.x(), zone.min.y(), zone.min.z());
-  Eigen::Vector3d           z_max(zone.max.x(), zone.max.y(), zone.max.z());
-  Eigen::Vector3d           center = (z_min+z_max)/2.0;// (cell.x(), cell.y(), cell.z());
-
-  Eigen::Vector3d           size = (z_max-z_min);
-  Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
-  mrs_lib::geometry::Cuboid c(center, size, orientation);
-  bv_prm_->addCuboid( c, 0.9, 0.1, 0.1, 0.1, true);
-
-  for (auto &node : nodes_){
-    bv_prm_->addPoint(Eigen::Vector3d(node->position.x(),node->position.y(),node->position.z()));
-    for (auto &neighbor_p : node->neighbors){
-      if (auto neighbor = neighbor_p.lock())
-        bv_prm_->addRay(mrs_lib::geometry::Ray( Eigen::Vector3d(node->position.x(), node->position.y(), node->position.z()),
-                                                    Eigen::Vector3d(neighbor->position.x(), neighbor->position.y(), neighbor->position.z())),
-                                                    1.0, 0.0, 0.0, 0.1);
-    }
   }
 
   ROS_INFO_THROTTLE(1.0,"[PRM]: number of PRM nodes: %i", nodes_.size());
