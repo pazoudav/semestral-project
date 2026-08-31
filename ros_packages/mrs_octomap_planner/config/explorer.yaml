@@ -1,27 +1,13 @@
 planning:
   replanning_distance: 0.6
-  big_distance: 1000000.0
-  heading_weight: 3.0
   skip_path_point_distance: 0.4
   flight_free_distance: 0.8
+  replan_request_cooldown: 0.5 # [s] min interval between replan_request_out service calls, to avoid overwhelming the service
+  stuck_distance: 0.1 # [m] min movement over stuck_duration to not be considered stuck
+  stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE
 
 prm:
   free_space_diameter: 1.2   # keep numerically in sync with prm_solver/config/prm_solver.yaml prm.free_space_diameter
-
-frontiers:
-  min_size: 8
-  min_svd_eigen_value: 64
-  size_decrease_ratio: 0.95
-  viewpoint:
-    sample_attempts: 64
-    sample_radius: 3.5
-    sample_height: 2.0
-    max_distance: 3.8
-    max_angle: 0.75 # ~= pi/4
-    max_count: 8
-    min_count: 1
-    resample_probability: 0.1
-    min_coverage: 8
 
 viz:
   scale:
@@ -32,31 +18,3 @@ timer_rates:
   main: 10.0
   path: 10.0
   fast: 20.0
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  # planning_tree_resolution: 0.4 # [m] min side length of each voxel in the octomap, should be set the same as octomap_mapping 
-# distance_transform_distance: 20.0 # [m] from the UAV into all directions
-# safe_obstacle_distance: # [m]# [m] distance around occupied cells that is also deemed as occupied, should be atleast uav_radius / 2
-#   default: 0.75
-# distance_penalty: 1.0 # coefficient for traveled distance from start in A* cost function
-# greedy_penalty: 1.0 # coefficient for estimated distance to goal in A* cost function
-# max_waypoint_distance: -1.0 # [m] // or set negative for no padding
-
-# unknown_is_occupied: true # if false, planning through unknown space is enabled 
-# timeout_threshold: 3.0 # [s] time after which A* planning is aborted and returns path to the node with the so far lowest cost   
-# min_path_length: 0.5 # [m] paths shorter than this distnace are ignored to prevent very small possibly oscillatory movements
-# # used for visualizing the planner cells using BatchVisualizer

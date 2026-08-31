@@ -27,6 +27,7 @@ set(CATKIN_DEPENDENCIES
   roscpp
   rospy
   std_msgs
+  std_srvs
   geometry_msgs
   visualization_msgs
   sensor_msgs

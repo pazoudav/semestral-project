@@ -16,6 +16,7 @@
 #include <mrs_msgs/TrajectoryReference.h>
 #include <mrs_msgs/TrajectoryReferenceSrv.h>
 #include <mrs_msgs/GetPathSrv.h>
+#include <std_srvs/Trigger.h>
 
 #include <mrs_octomap_tools/octomap_methods.h>
 #include <octomap/octomap.h>
@@ -43,17 +44,13 @@
 typedef enum
 {
   STATE_IDLE,
-  STATE_MAP_UPDATED,
-  STATE_FRONTIERS_UPDATED,
-  STATE_PRM_UPDATED,
-  STATE_TSP_UPDATED,
-  STATE_WAITING,
-  STATE_FLYING
-  
+  STATE_PATH_PLANNING,
+  STATE_TRAJ_EXEC,
+  STATE_COLLISION,
 } State_t;
 
 
-const std::string _state_names_[] = {"IDLE", "MAP_UPDATED", "FRONTIERS_UPDATED", "PRM_UPDATED", "TSP_UPDATED", "WAITING", "FLYING"};
+const std::string _state_names_[] = {"IDLE", "STATE_PATH_PLANNING", "STATE_TRAJ_EXEC", "STATE_COLLISION", "TSP_UPDATED", "WAITING", "FLYING"};
 
 
 namespace mrs_octomap_planner
@@ -76,8 +73,6 @@ namespace mrs_octomap_planner
     // params
     double _replanning_distance_;
     double _flight_free_distance_;
-    double _big_distance_;
-    double _heading_weight_;
     double _skip_path_point_distance_;
     double _free_space_dia_;
     double _scale_points_;
@@ -85,6 +80,9 @@ namespace mrs_octomap_planner
     double _rate_main_timer_;
     double _rate_path_timer_;
     double _rate_fast_timer_;
+    double _replan_request_cooldown_;
+    double _stuck_distance_;
+    double _stuck_duration_;
 
     struct Path_t
     {
@@ -134,6 +132,17 @@ namespace mrs_octomap_planner
     mrs_lib::ServiceClientHandler<tsp_solver::SetStart>             sc_tsp_set_start_;
     mrs_lib::ServiceClientHandler<tsp_solver::Solve>                sc_tsp_solve_;
     mrs_lib::ServiceClientHandler<prm_solver::FindSimplifiedPath>   sc_prm_find_simplified_path_;
+    mrs_lib::ServiceClientHandler<std_srvs::Trigger>                sc_replan_request_;
+    ros::Time                                                       last_replan_request_time_ = ros::Time(0);
+
+    // stuck detection (checkStuck())
+    octomap::point3d last_moved_position_;
+    ros::Time        last_moved_time_ = ros::Time(0);
+    bool             stuck_check_reset_ = true;
+
+    // service servers
+    ros::ServiceServer ss_replan_request_;
+    bool                callbackReplanRequest(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& res);
 
     // timeout callbacks
     void timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg);
@@ -151,8 +160,8 @@ namespace mrs_octomap_planner
     void       timerMain([[maybe_unused]] const ros::TimerEvent& evt);
     // ros::Timer timer_frontiers_;
     // void       timer_frontiers_([[maybe_unused]] const ros::TimerEvent& evt);
-    ros::Timer timer_path_;
-    void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
+    // ros::Timer timer_path_;
+    // void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
     // void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
     ros::Timer timer_replanner_;
     void       timerReplanner([[maybe_unused]] const ros::TimerEvent& evt);
@@ -167,7 +176,8 @@ namespace mrs_octomap_planner
     bool                                                              makePath();
     bool  getCurrentStateAndPrediction(octomap::point3d& start_coord, mrs_msgs::MpcPredictionFullState& prediction, octomath::Vector3& velocity);
     bool  checkImminentCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
-    bool  shouldReplan(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    bool  nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    bool  checkStuck(const octomap::point3d& start_coord);
     bool  solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path);
     void  visualizeGlobalPath(const std::vector<octomap::point3d>& glob_path);
     bool  buildLocalPath(const octomap::point3d& start_coord, const std::vector<octomap::point3d>& glob_path, const octomath::Vector3& velocity,
@@ -175,7 +185,9 @@ namespace mrs_octomap_planner
     bool  finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path, const ros::Time& t0);
     std::optional<mrs_msgs::TrajectoryReference>                     makeTrajectory(const Path_t& path);
     bool                                                              publishTrajectory(const mrs_msgs::TrajectoryReference& trajectory, int id);
-    bool                                                              checkTrajectoryCollision();
+    bool                                                              checkTrajectoryCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    void                                                              requestReplan();
+    bool pathAndTrajectory();
 
   };
 
@@ -194,9 +206,10 @@ namespace mrs_octomap_planner
 
     param_loader.loadParam("planning/replanning_distance",_replanning_distance_);
     param_loader.loadParam("planning/flight_free_distance",_flight_free_distance_);
-    param_loader.loadParam("planning/big_distance",_big_distance_);
-    param_loader.loadParam("planning/heading_weight",_heading_weight_);
     param_loader.loadParam("planning/skip_path_point_distance",_skip_path_point_distance_);
+    param_loader.loadParam("planning/replan_request_cooldown",_replan_request_cooldown_);
+    param_loader.loadParam("planning/stuck_distance",_stuck_distance_);
+    param_loader.loadParam("planning/stuck_duration",_stuck_duration_);
 
     param_loader.loadParam("prm/free_space_diameter",_free_space_dia_);
 
@@ -236,10 +249,12 @@ namespace mrs_octomap_planner
     sc_tsp_set_start_             = mrs_lib::ServiceClientHandler<tsp_solver::SetStart>(nh_, "set_start_out");
     sc_tsp_solve_                 = mrs_lib::ServiceClientHandler<tsp_solver::Solve>(nh_, "solve_out");
     sc_prm_find_simplified_path_  = mrs_lib::ServiceClientHandler<prm_solver::FindSimplifiedPath>(nh_, "find_simplified_path_out");
+    sc_replan_request_            = mrs_lib::ServiceClientHandler<std_srvs::Trigger>(nh_, "replan_request_out");
 
+    ss_replan_request_ = nh_.advertiseService("replan_request_in", &Explorer::callbackReplanRequest, this);
 
     timer_main_       = nh_.createTimer(ros::Rate(_rate_main_timer_), &Explorer::timerMain,      this);
-    timer_path_       = nh_.createTimer(ros::Rate(_rate_path_timer_), &Explorer::timerPath,      this);
+    // timer_path_       = nh_.createTimer(ros::Rate(_rate_path_timer_), &Explorer::timerPath,      this);
     timer_replanner_  = nh_.createTimer(ros::Rate(_rate_fast_timer_), &Explorer::timerReplanner, this);
 
 
@@ -274,8 +289,6 @@ namespace mrs_octomap_planner
       return;
     }
 
-    // frontier sync (STATE_MAP_UPDATED -> STATE_FRONTIERS_UPDATED) now happens in callbackFrontiers()
-
   }
 
 
@@ -283,30 +296,71 @@ namespace mrs_octomap_planner
   void Explorer::timerReplanner([[maybe_unused]] const ros::TimerEvent& evt)
   {
     if (!is_initialized_) {
+      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: drone not initialized");
+      return;
+    }
+    if (!map_ready_){
+      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: map not ready, cannot calculate PATH");
+      return;
+    }  
+    if (!tsp_ready_){
+      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: TSP not ready, cannot calculate PATH");
+      return;
+    }  
+    
+
+    if (state_ == STATE_IDLE)
+    {
+      ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: idle state, start planning");
+      requestReplan();
+      return;
+    }
+
+    if (state_ != STATE_TRAJ_EXEC)
+    {
+      return;
+    }
+
+    octomap::point3d start_coord;
+    mrs_msgs::MpcPredictionFullState prediction;
+    octomath::Vector3 velocity;
+
+    if (!getCurrentStateAndPrediction(start_coord, prediction, velocity))
+    {
+      ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: cannot get state and prediction");
+      return;
+    }
+
+    if (nearGoal(start_coord, prediction))
+    {
+      ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: goal reached -> replanning");
+      requestReplan();
+      return;
+    }
+
+    // check if current path from predition is in collision
+    if (checkTrajectoryCollision(start_coord, prediction))
+    {
+      ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: collision detected");
+      requestReplan();
+      return;
+    }
+
+    // force back to IDLE if the UAV hasn't made meaningful progress for a while 
+    if (checkStuck(start_coord))
+    {
+      ROS_ERROR("[MrsExplorer]: UAV stuck (moved < %.2f m in %.2f s) -> forcing IDLE", _stuck_distance_, _stuck_duration_);
+      changeState(STATE_IDLE);
       return;
     }
   }
 
 
-  // periodic path-update timer: replans via makePath(), publishes the new path as debug rays on bv_path_, then requests a trajectory via makeTrajectory()
-  void Explorer::timerPath([[maybe_unused]] const ros::TimerEvent& evt)
+bool Explorer::pathAndTrajectory()
   {
-    if (!is_initialized_) 
-    {
-      return;
+    if (!is_initialized_) {
+      return false;
     }
-
-    if (!map_ready_)
-    {
-      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: map not ready, cannot calculate PATH");
-      return;
-    }  
-    
-    if (!tsp_ready_)
-    {
-      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: TSP not ready, cannot calculate PATH");
-      return;
-    }  
 
     ros::Time t0 = ros::Time::now();
 
@@ -315,7 +369,7 @@ namespace mrs_octomap_planner
 
     if (!new_path)
     {
-      return;
+      return false;
     }
 
     for (int i=0; i+1<path_.points.size(); i++)
@@ -333,18 +387,20 @@ namespace mrs_octomap_planner
     if (!trajectory)
     {
       ROS_WARN("[MrsExplorer]: trajectory generation falied");
-      return;
+      return false;
     }
 
     if (!publishTrajectory(*trajectory, path_.id))
     {
       ROS_WARN("[MrsExplorer]: trajectory reference publishing failed");
-      return;
+      return false;
     }
+
+    // ROS_WARN("[MrsExplorer]: trajectory replan succesfull");
 
     ros::Duration dt = ros::Time::now() - t0;
     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: PATH update %.1fms", dt.toNSec()/1000000.0);
-
+    return true;
   }
 
 
@@ -355,7 +411,7 @@ namespace mrs_octomap_planner
       return;
     }
     
-    ROS_INFO("[MrsExplorer]: getting octomap");
+    ROS_INFO_THROTTLE(5.0, "[MrsExplorer]: getting octomap");
 
     std::optional<OcTreeSharedPtr_t> octree_local = msgToMap(msg);
 
@@ -386,7 +442,6 @@ namespace mrs_octomap_planner
     }
 
     tsp_ready_ = true;
-    changeState(STATE_FRONTIERS_UPDATED);
   }
 
 
@@ -404,20 +459,11 @@ bool Explorer::makePath()
   octomath::Vector3 velocity;
   if (!getCurrentStateAndPrediction(start_coord, prediction, velocity))
   {
+    ROS_WARN("[MrsExplorer-Replanner]: cannot get state and prediction");
     return false;
   }
 
-  // check if current path from predition is in collision
-  if (checkImminentCollision(start_coord, prediction))
-  {
-    return true;
-  }
-
-  if (!shouldReplan(start_coord, prediction))
-  {
-    return false;
-  }
-  ROS_ERROR("replanning");
+  // ROS_WARN("[MrsExplorer]: replanning");
   goal_ = start_coord;
 
   current_viewpoint_ = start_coord;
@@ -425,6 +471,7 @@ bool Explorer::makePath()
   std::vector<octomap::point3d> glob_path;
   if (!solveTsp(velocity, glob_path))
   {
+    ROS_ERROR("[MrsExplorer]: TSP solve failed");
     return false;
   }
 
@@ -434,10 +481,16 @@ bool Explorer::makePath()
   std::vector<octomap::point3d> sub_global_path(0);
   if (!buildLocalPath(start_coord, glob_path, velocity, path, sub_global_path))
   {
+    ROS_ERROR("[MrsExplorer]: local path build failed, replan local path");
     return false;
   }
 
-  return finalizePath(path, sub_global_path, t0);
+  bool succ = finalizePath(path, sub_global_path, t0);
+  if (!succ){
+    ROS_ERROR("[MrsExplorer]: finalize path build failed");
+    return false;
+  }
+  return true;
 }
 
 
@@ -482,7 +535,7 @@ bool Explorer::checkImminentCollision(const octomap::point3d& start_coord, const
     isInFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
     if (!isInFreeSpace)
     {
-      ROS_ERROR("EMERGENCY REPLAN");
+      ROS_ERROR("[MrsExplorer]: EMERGENCY REPLAN");
       path_.points = {start_coord, last_free_point_};
       path_.id     = next_path_id_++;
       goal_ = path_.points.back();
@@ -499,7 +552,7 @@ bool Explorer::checkImminentCollision(const octomap::point3d& start_coord, const
 }
 
 // if is in collision recalculate path, otherwise check if drone is near end of the path and replan, othervise do nothing
-bool Explorer::shouldReplan(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
+bool Explorer::nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
 {
   if (!first_path_planend_){
     goal_ = start_coord;
@@ -515,10 +568,25 @@ bool Explorer::shouldReplan(const octomap::point3d& start_coord, const mrs_msgs:
   return true;
 }
 
+// returns true once the UAV has moved less than planning/stuck_distance for planning/stuck_duration seconds straight; tracker is (re)armed by
+// stuck_check_reset_, which requestReplan() sets whenever a new trajectory execution actually starts
+bool Explorer::checkStuck(const octomap::point3d& start_coord)
+{
+  if (stuck_check_reset_ || start_coord.distance(last_moved_position_) > _stuck_distance_)
+  {
+    last_moved_position_ = start_coord;
+    last_moved_time_      = ros::Time::now();
+    stuck_check_reset_    = false;
+    return false;
+  }
+
+  return (ros::Time::now() - last_moved_time_).toSec() > _stuck_duration_;
+}
+
 // calls tsp_solver's ~set_start_out/~solve_out services to obtain a fresh global viewpoint tour into glob_path
 bool Explorer::solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path)
 {
-  ROS_ERROR("TSP solve start");
+  // ROS_INFO("[MrsExplorer]: TSP solve start");
 
   tsp_solver::SetStart set_start_srv;
   set_start_srv.request.position.x = current_viewpoint_.x();
@@ -529,7 +597,7 @@ bool Explorer::solveTsp(const octomath::Vector3& velocity, std::vector<octomap::
     ROS_WARN("[MrsExplorer]: failed to set TSP start");
     return false;
   }
-  ROS_ERROR("TSP start set");
+  // ROS_INFO("[MrsExplorer]: TSP start set");
 
   tsp_solver::Solve solve_srv;
   solve_srv.request.velocity.x = velocity.x();
@@ -544,7 +612,7 @@ bool Explorer::solveTsp(const octomath::Vector3& velocity, std::vector<octomap::
   {
     glob_path.emplace_back(p.x, p.y, p.z);
   }
-  ROS_ERROR("TSP solve end");
+  // ROS_INFO("[MrsExplorer]: TSP solve end");
 
   if (glob_path.size() <= 1)
   {
@@ -603,7 +671,7 @@ bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::ve
     find_path_srv.request.velocity.z = seg_velocity.z();
     if (!sc_prm_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success)
     {
-      ROS_WARN("temp path not found");
+      ROS_ERROR("[MrsExplorer]: temp path not found");
       return false;
     }
     std::vector<octomap::point3d> temp_path;
@@ -647,18 +715,10 @@ bool Explorer::finalizePath(std::vector<octomap::point3d>& path, const std::vect
 
 
 // checks the current MPC prediction against octree_ for imminent collisions; dead code, never called (equivalent logic is inlined directly in makePath())
-bool Explorer::checkTrajectoryCollision()
+bool Explorer::checkTrajectoryCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
 {
-  // extract tracker predition
-  auto res_prediction = getFullStatePrediction();
-  if (!res_prediction){
-    ROS_WARN_THROTTLE(1.0,"[MRsExplorer] has no full state prediction");
-    return false;
-  }
-  auto prediction = res_prediction.value();
-  
   // check if current path from predition is in collision
-  bool isInFreeSpace = true;
+  bool isFreeSpace = true;
   std::shared_ptr<OcTree_t> tree;
   {
     std::scoped_lock lock(mutex_octree_);
@@ -666,14 +726,15 @@ bool Explorer::checkTrajectoryCollision()
   }
   for (auto & point : prediction.position)
   {
-    isInFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
-    if (!isInFreeSpace)
+    isFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
+    if (!isFreeSpace)
     {
       // goal_ = start_coord;
-      ROS_WARN("[MrsExplorer]: collision detected in trajectory, replanning");
-      return true;
+      // ROS_WARN("[MrsExplorer]: collision detected in trajectory, replanning");
+      break;
     }
   }
+  return !isFreeSpace;
 }
   
 
@@ -700,12 +761,12 @@ std::optional<mrs_msgs::TrajectoryReference> Explorer::makeTrajectory(const Path
   bool success = sc_get_trajectory_.call(srv_get_path);
 
   if (!success) {
-    ROS_WARN("[Explorer]: service call for trajectory failed");
+    ROS_WARN("[MrsExplorer]: service call for trajectory failed");
     return std::nullopt;
   }
 
   if (!srv_get_path.response.success) {
-    ROS_WARN("[Explorer]: service call for trajectory failed: '%s'", srv_get_path.response.message.c_str());
+    ROS_WARN("[MrsExplorer]: service call for trajectory failed: '%s'", srv_get_path.response.message.c_str());
     return std::nullopt;
   }
 
@@ -734,6 +795,7 @@ bool Explorer::publishTrajectory(const mrs_msgs::TrajectoryReference& trajectory
 
   return true;
 }
+
 
 // tracker's full-state MPC prediction (in the octree frame), delegating to octomap_planner_utils::getFullStatePrediction using the tracker_cmd/diagnostics subscribers
 std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction()
@@ -773,6 +835,30 @@ void Explorer::changeState(const State_t new_state) {
   ROS_INFO("[MrsExplorer]: changing state '%s' -> '%s'", _state_names_[old_state].c_str(), _state_names_[new_state].c_str());
 
   state_ = new_state;
+}
+
+// switches to STATE_PATH_PLANNING, calls the replan_request_out service, and moves to STATE_TRAJ_EXEC on success or back to STATE_IDLE on failure
+// no-ops if called again within planning/replan_request_cooldown seconds of the last actual call, to avoid hammering the service (e.g. while sitting in STATE_IDLE at the fast timer's rate)
+void Explorer::requestReplan()
+{
+  const ros::Time now = ros::Time::now();
+  if ((now - last_replan_request_time_).toSec() < _replan_request_cooldown_) {
+    return;
+  }
+  last_replan_request_time_ = now;
+
+  changeState(STATE_PATH_PLANNING);
+  std_srvs::Trigger replan_request_srv;
+  sc_replan_request_.call(replan_request_srv);
+  bool success = replan_request_srv.response.success;
+
+  if (success) {
+    stuck_check_reset_ = true;
+    changeState(STATE_TRAJ_EXEC);
+  }
+  else {
+    changeState(STATE_IDLE);
+  }
 }
 
 // deserializes an octomap_msgs/Octomap (binary or full, per msg->binary) into an OcTree_t; returns nullopt if the message decodes to an empty/null tree
@@ -820,20 +906,26 @@ ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: position cmd timeouted!");
 }
 
 
+// replan_request_in callback; only acknowledges the request for now, no replanning logic is triggered from here yet
+bool Explorer::callbackReplanRequest([[maybe_unused]] std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& res)
+{
+  ROS_INFO("[MrsExplorer]: replan request received");
+
+  bool success = pathAndTrajectory();
+
+  res.success = success;
+  res.message = "acknowledged";
+  ROS_WARN("[MrsExplorer]: replan request processed: %s", success ? "SUCCESS" : "FAIL");
+  return true;
+}
+
+
 // diagnostics_in callback; currently a no-op besides the init guard (only feeds sh_control_manager_diag_'s own freshness checks used elsewhere via hasMsg()/lastMsgTime())
 void Explorer::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr diagnostics)
 {
-
-if (!is_initialized_){
-    return;
-}
-      // mrs_msgs::ControlManagerDiagnosticsConstPtr diagnostics = wrp.getMsg();
-
-      // if (uav_state_ == UAVState::FLYING && !diagnostics->tracker_status.have_goal) {
-
-      //     changeState(UAVState::HOVERING);
-
-      // }
+  if (!is_initialized_){
+      return;
+  }
 }
 
 

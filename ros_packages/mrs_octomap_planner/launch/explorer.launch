@@ -35,6 +35,7 @@
       <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
       <remap from="~frontiers_in" to="frontier_detector/frontiers" />
+      <remap from="~replan_request_in" to="~replan_request" />
 
 
       <!-- services out -->
@@ -44,6 +45,7 @@
       <remap from="~set_start_out" to="tsp_solver/set_start" />
       <remap from="~solve_out" to="tsp_solver/solve" />
       <remap from="~find_simplified_path_out" to="prm_solver/find_simplified_path" />
+      <remap from="~replan_request_out" to="~replan_request" />
 
     </node>
 
