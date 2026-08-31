@@ -6,7 +6,7 @@ attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 # you can modify these
 pre_window: export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x500
-startup_window: mapplan
+startup_window: explorer
 windows:
   - roscore:
       layout: tiled
@@ -37,6 +37,11 @@ windows:
           custom_config:=./config/custom_config.yaml
           world_config:=./config/world_config.yaml
           network_config:=./config/network_config.yaml
+  - takeoff:
+      layout: tiled
+      panes:
+        - waitForHw; roslaunch mrs_uav_autostart automatic_start.launch
+        - 'waitForControl; rosservice call /$UAV_NAME/hw_api/arming 1; sleep 2; rosservice call /$UAV_NAME/hw_api/offboard'
   - mapplan:
       layout: tiled
       panes:
@@ -46,12 +51,13 @@ windows:
           config_pcl_filter_rs_front:=./config/rs_front_filter.yaml
           config_pcl_filter_rs_down:=./config/rs_down_filter.yaml
           # config_octomap_planner:=./config/octomap_planner.yaml
-  - takeoff:
+  - explorer:
       layout: tiled
       panes:
-        - waitForHw; roslaunch mrs_uav_autostart automatic_start.launch
-        - 'waitForControl; rosservice call /$UAV_NAME/hw_api/arming 1; sleep 2; rosservice call /$UAV_NAME/hw_api/offboard'
-  - goto:
+        # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        - waitForHw; roslaunch mrs_octomap_planner explorer.launch
+  
+  - nodelets:
       layout: tiled
       panes:
         # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
@@ -61,9 +67,10 @@ windows:
   - skeleton:
       layout: tiled
       panes:
-        - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker 
-        - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
-        - waitForGazebo; roslaunch skeleton_estimator skeleton_estimator.launch
+        - waitForGazebo; 
+          cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker;
+          cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
+        - waitForHw; roslaunch skeleton_estimator skeleton_estimator.launch
         # - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker; 
         #   cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray;
         # - waitForGazebo; roslaunch skeleton_estimator skeleton_estimator.launch

@@ -15,9 +15,10 @@ against and call with the `octomap_planner_utils::` namespace prefix.
 
 This package exposes **no ROS interface of its own** — it publishes no topics, subscribes to no
 topics, and advertises no services or actions. It is a plain linked library (no nodelet, no node
-executable); its `getPosition()` helper takes already-constructed `mrs_lib::SubscribeHandler`
-objects owned by the *calling* nodelet as arguments, it does not create its own subscriptions.
-Consuming packages (`mrs_octomap_planner`, `frontier_detection`) own all actual ROS communication.
+executable); its `getPosition()`/`getFullStatePrediction()` helpers take already-constructed
+`mrs_lib::SubscribeHandler` objects owned by the *calling* nodelet as arguments, they do not create
+their own subscriptions. Consuming packages (`mrs_octomap_planner`, `frontier_detection`) own all
+actual ROS communication.
 
 ## Important functions/types
 
@@ -52,6 +53,14 @@ Functions:
 - `getPosition(...)` — reads the UAV's current commanded position (from `mrs_msgs::TrackerCommand`
   via a caller-owned `SubscribeHandler`) and transforms it into the octree frame; assumes the
   octree mutex is already held by the caller when reading `octree_frame`.
+- `getFullStatePrediction(...)` — reads the tracker's full-state MPC prediction
+  (`mrs_msgs::TrackerCommand::full_state_prediction`, via the same two caller-owned
+  `SubscribeHandler`s as `getPosition`) and returns it once both the control-manager diagnostics
+  and tracker command are fresh (<2s old) and a transform from the prediction's frame into
+  `octree_frame` exists; assumes the octree mutex is already held by the caller. Note it only
+  checks that `transformer.getTransform(...)` succeeds — it does not apply that transform to the
+  returned prediction, so the returned message is still expressed in its original `header.frame_id`
+  rather than `octree_frame`.
 
 ## File structure
 
@@ -70,13 +79,14 @@ octomap_planner_utils/
 
 From `package.xml` / `CMakeLists.txt`:
 - `cmake_modules` — CMake helper modules used by the catkin build.
-- `roscpp` — core ROS C++ client library (logging macros, `ros::Time`, etc. used by `getPosition`).
+- `roscpp` — core ROS C++ client library (logging macros, `ros::Time`, etc. used by `getPosition`
+  and `getFullStatePrediction`).
 - `octomap_msgs`, `octomap_ros` — ROS message/conversion glue for `octomap`, pulled in alongside
   the core `octomap` library.
 - `mrs_lib` — provides `mrs_lib::SubscribeHandler` and `mrs_lib::Transformer`, used by
-  `getPosition()` to read and transform the UAV's tracker command.
-- `mrs_msgs` — message types (`ReferenceStamped`, `TrackerCommand`, `ControlManagerDiagnostics`)
-  consumed/produced by `getPosition()`.
+  `getPosition()`/`getFullStatePrediction()` to read and transform the UAV's tracker command.
+- `mrs_msgs` — message types (`ReferenceStamped`, `TrackerCommand`, `ControlManagerDiagnostics`,
+  `MpcPredictionFullState`) consumed/produced by `getPosition()`/`getFullStatePrediction()`.
 - `octomap` (via `find_package(octomap REQUIRED)`) — the actual octree data structure
   (`octomap::OcTree`, `octomap::point3d`, `octomap::OcTreeKey`) that most of this library's
   geometry/free-space functions operate on.

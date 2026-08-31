@@ -14,7 +14,7 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 |---|---|---|---|
 | `~tracker_cmd_in` | `control_manager/tracker_cmd` | `mrs_msgs/TrackerCommand` | source of the MPC full-state prediction used for collision checks |
 | `~octomap_in` | `octomap_server/octomap_global_full` | `octomap_msgs/Octomap` | converted into the internal `octree_` (`callbackOctomap`) |
-| `~diagnostics_in` | `control_manager/diagnostics` | `mrs_msgs/ControlManagerDiagnostics` | freshness-gates `getFullStatePrediction()`/`getPosition()`; the callback itself (`controlManagerDiagCallback`) is currently a no-op |
+| `~diagnostics_in` | `control_manager/diagnostics` | `mrs_msgs/ControlManagerDiagnostics` | freshness-gates `getFullStatePrediction()`/`getPosition()` (both now thin delegators into `octomap_planner_utils`); the callback itself (`controlManagerDiagCallback`) is currently a no-op |
 | `~frontiers_in` | `frontier_detection/frontiers` | `frontier_detection/FrontierArray` | only used to flag that a TSP re-solve is due (`callbackFrontiers`); the message payload itself is not consumed here |
 
 ### Published topics
@@ -28,8 +28,8 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 
 | Private name | Remapped to | Type | Called from |
 |---|---|---|---|
-| `~trajectory_generation_out` | `trajectory_generation/get_path` | `mrs_msgs/GetPathSrv` | `makeTrajectory()` — turns `path_` into a trajectory |
-| `~trajectory_reference_out` | `control_manager/trajectory_reference` | `mrs_msgs/TrajectoryReferenceSrv` | `makeTrajectory()` — publishes the trajectory (`fly_now=true`) to the control manager |
+| `~trajectory_generation_out` | `trajectory_generation/get_path` | `mrs_msgs/GetPathSrv` | `makeTrajectory()` — turns the `Path_t` passed to it (`path_`, from `timerPath()`) into a `mrs_msgs/TrajectoryReference`, returned to the caller (no publishing) |
+| `~trajectory_reference_out` | `control_manager/trajectory_reference` | `mrs_msgs/TrajectoryReferenceSrv` | `publishTrajectory()` — publishes the trajectory produced by `makeTrajectory()` (`fly_now=true`, `input_id = path_.id`) to the control manager |
 | `~set_start_out` | `tsp_solver/set_start` | `tsp_solver/SetStart` | `makePath()` — sets the TSP start position before solving |
 | `~solve_out` | `tsp_solver/solve` | `tsp_solver/Solve` | `makePath()` — requests the ordered global viewpoint tour from `tsp_solver` |
 | `~find_simplified_path_out` | `prm_solver/find_simplified_path` | `prm_solver/FindSimplifiedPath` | `makePath()` — requests a flyable, simplified sub-path per tour segment from `prm_solver` |
@@ -43,7 +43,7 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 - `STATE_IDLE` — the initial value, set once in `onInit()`.
 - `STATE_FRONTIERS_UPDATED` — set every time `callbackFrontiers()` receives a new `frontier_detection/FrontierArray` message.
 
-`state_` is otherwise never read or branched on anywhere in the file — none of `timerMain()`, `timerPath()`, or `makePath()` check it. The actual control flow is instead driven directly by the `map_ready_`/`tsp_ready_` atomic flags (set in `callbackOctomap()`/`callbackFrontiers()` respectively) and by `timerPath()` unconditionally calling `makePath()`/`makeTrajectory()` on every tick once those flags are set. In practice the state machine is now a vestigial diagnostic label rather than something that gates behavior — consistent with PRM/TSP solving having moved out-of-process into the `prm_solver`/`tsp_solver` nodelets, so the `STATE_PRM_UPDATED`/`STATE_TSP_UPDATED`/`STATE_WAITING`/`STATE_FLYING`/`STATE_MAP_UPDATED` states are dead states that are never entered.
+`state_` is otherwise never read or branched on anywhere in the file — none of `timerMain()`, `timerPath()`, or `makePath()` check it. The actual control flow is instead driven directly by the `map_ready_`/`tsp_ready_` atomic flags (set in `callbackOctomap()`/`callbackFrontiers()` respectively) and by `timerPath()` unconditionally calling `makePath()`/`makeTrajectory()`/`publishTrajectory()` on every tick once those flags are set. In practice the state machine is now a vestigial diagnostic label rather than something that gates behavior — consistent with PRM/TSP solving having moved out-of-process into the `prm_solver`/`tsp_solver` nodelets, so the `STATE_PRM_UPDATED`/`STATE_TSP_UPDATED`/`STATE_WAITING`/`STATE_FLYING`/`STATE_MAP_UPDATED` states are dead states that are never entered.
 
 ## 4. Important functions
 
@@ -51,13 +51,14 @@ All topic/service names below are the private (`~`) names used in `src/explorer.
 
 - **`onInit()`** — nodelet entry point; loads parameters from `explorer.yaml`, sets up subscribers/publishers/service clients, starts `timer_main_`/`timer_path_`, and sets `state_` to `STATE_IDLE`.
 - **`timerMain()`** — periodic main-loop timer; currently a no-op placeholder once the map is ready (frontier-triggered work happens in `callbackFrontiers()` instead).
-- **`timerPath()`** — periodic path-update timer: calls `makePath()` to (re)plan, publishes the resulting path as debug rays on `bv_path_`, then calls `makeTrajectory()` to request/publish a new trajectory.
+- **`timerPath()`** — periodic path-update timer: calls `makePath()` to (re)plan, publishes the resulting path as debug rays on `bv_path_`, then calls `makeTrajectory(path_)` to get a trajectory (warns and returns early if it comes back `std::nullopt`) and, on success, `publishTrajectory(*trajectory, path_.id)` to send it to the control manager (warns and returns early if that call fails).
 - **`callbackOctomap()`** — converts the incoming octomap message into `octree_`, latches the map frame onto `bv_path_` once, and sets `map_ready_`; does *not* extract frontiers (that happens out-of-process in `frontier_detection`).
 - **`callbackFrontiers()`** — sets `tsp_ready_` and calls `changeState(STATE_FRONTIERS_UPDATED)` to flag that a TSP re-solve is due; PRM roadmap updates from frontiers happen internally in `prm_solver`, not here.
-- **`makePath()`** — the core replanning routine: checks the current MPC prediction for imminent collisions (triggers an emergency brake to the last known free point if so); otherwise, once close enough to the current goal, calls `tsp_solver`'s `~set_start_out`/`~solve_out` services for a fresh global viewpoint tour, then steps through tour sub-segments calling `prm_solver`'s `~find_simplified_path_out` service to assemble a flyable `path_`.
+- **`makePath()`** — the core replanning routine: checks the current MPC prediction for imminent collisions (triggers an emergency brake to the last known free point if so); otherwise, once close enough to the current goal, calls `tsp_solver`'s `~set_start_out`/`~solve_out` services for a fresh global viewpoint tour, then steps through tour sub-segments calling `prm_solver`'s `~find_simplified_path_out` service to assemble a flyable path. On each successful (re)plan — including the emergency-brake path — it writes the new points into `path_.points` and assigns `path_.id = next_path_id_++`, so every freshly produced `path_` carries a unique, monotonically increasing id.
 - **`checkTrajectoryCollision()`** — checks the MPC prediction against `octree_` for collisions; **dead code**, never called (equivalent logic is inlined directly inside `makePath()`).
-- **`makeTrajectory()`** — converts `path_` into a trajectory via `~trajectory_generation_out`, then publishes it (`fly_now=true`) via `~trajectory_reference_out`, incrementing `path_id_` as the trajectory's `input_id`.
-- **`getFullStatePrediction()`** — returns the tracker's full-state MPC prediction transformed into the octree frame, or `nullopt` if diagnostics/tracker_cmd are stale (>2s) or the frame transform fails.
+- **`makeTrajectory(const Path_t& path)`** — converts the given `path` (points, `path.id` unused here) into an `mrs_msgs::TrajectoryReference` via the `~trajectory_generation_out` service and returns it (or `std::nullopt` on a failed/unsuccessful service call); no longer publishes anything itself. `timerPath()` calls it with `path_` after `makePath()` returns.
+- **`publishTrajectory(const mrs_msgs::TrajectoryReference& trajectory, int id)`** — publishes a trajectory previously produced by `makeTrajectory()` via the `~trajectory_reference_out` service, setting `fly_now=true` and `input_id=id`; returns `false` on a failed/unsuccessful service call. `timerPath()` calls it with the result of `makeTrajectory()` and `path_.id`.
+- **`getFullStatePrediction()`** — returns the tracker's full-state MPC prediction (or `nullopt` if diagnostics/tracker_cmd are stale (>2s) or no frame transform is available), delegating to `octomap_planner_utils::getFullStatePrediction`.
 - **`getPosition()`** — returns the current UAV position in the octree frame, delegating to `octomap_planner_utils::getPosition`.
 - **`msgToMap()`** — deserializes an `octomap_msgs/Octomap` (binary or full) into an `OcTree_t`.
 - **`changeState()`** — logs and sets `state_`; see State machine section above — effectively just a diagnostic label in the current code.
@@ -106,7 +107,7 @@ From `package.xml`/`CMakeLists.txt` (build-time, catkin). The package defines no
 - `nodelet`, `roscpp`, `rospy`, `pluginlib` (via `PLUGINLIB_EXPORT_CLASS`) — nodelet plumbing
 - `nav_msgs`, `std_msgs`, `geometry_msgs`, `visualization_msgs`, `sensor_msgs` — standard ROS message types
 - `Eigen3` (`find_package(Eigen3 REQUIRED)`) — used via `mrs_lib::geometry::Ray`/`BatchVisualizer` calls in `explorer.cpp`
-- `octomap_planner_utils` — this project's own shared geometry/octomap helper library; `explorer.cpp` fully qualifies every call with the `octomap_planner_utils::` prefix (`isFreeSpace`, `getPosition`, etc.)
+- `octomap_planner_utils` — this project's own shared geometry/octomap helper library; `explorer.cpp` fully qualifies every call with the `octomap_planner_utils::` prefix (`isFreeSpace`, `getPosition`, `getFullStatePrediction`, etc.) — `Explorer::getPosition()`/`Explorer::getFullStatePrediction()` are now both thin delegators to their `octomap_planner_utils` counterparts
 - `frontier_detection` — declared as a build dependency for its `FrontierArray` message type, consumed on `~frontiers_in`
 
 Runtime-only (not build dependencies, but required at runtime for `Explorer` to function — separate standalone nodelets started elsewhere, e.g. from `tmux/session.yml`):

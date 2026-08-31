@@ -84,9 +84,16 @@ namespace mrs_octomap_planner
     double _scale_lines_;
     double _rate_main_timer_;
     double _rate_path_timer_;
+    double _rate_fast_timer_;
 
-    std::vector<octomap::point3d> path_;
-    int              path_id_ = 0;
+    struct Path_t
+    {
+      int                            id = 0;
+      std::vector<octomap::point3d> points;
+    };
+
+    Path_t            path_;
+    int               next_path_id_ = 0;
     octomap::point3d current_viewpoint_;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_viewpoint_candidates_;
@@ -147,6 +154,8 @@ namespace mrs_octomap_planner
     ros::Timer timer_path_;
     void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
     // void       timerPath([[maybe_unused]] const ros::TimerEvent& evt);
+    ros::Timer timer_replanner_;
+    void       timerReplanner([[maybe_unused]] const ros::TimerEvent& evt);
 
     
 
@@ -156,7 +165,16 @@ namespace mrs_octomap_planner
     std::optional<mrs_msgs::MpcPredictionFullState>                   getFullStatePrediction();
     std::optional<OcTreeSharedPtr_t>                                  msgToMap(const octomap_msgs::OctomapConstPtr octomap);
     bool                                                              makePath();
-    bool                                                              makeTrajectory();
+    bool  getCurrentStateAndPrediction(octomap::point3d& start_coord, mrs_msgs::MpcPredictionFullState& prediction, octomath::Vector3& velocity);
+    bool  checkImminentCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    bool  shouldReplan(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    bool  solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path);
+    void  visualizeGlobalPath(const std::vector<octomap::point3d>& glob_path);
+    bool  buildLocalPath(const octomap::point3d& start_coord, const std::vector<octomap::point3d>& glob_path, const octomath::Vector3& velocity,
+                          std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path);
+    bool  finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path, const ros::Time& t0);
+    std::optional<mrs_msgs::TrajectoryReference>                     makeTrajectory(const Path_t& path);
+    bool                                                              publishTrajectory(const mrs_msgs::TrajectoryReference& trajectory, int id);
     bool                                                              checkTrajectoryCollision();
 
   };
@@ -187,6 +205,7 @@ namespace mrs_octomap_planner
 
     param_loader.loadParam("timer_rates/main",       _rate_main_timer_);
     param_loader.loadParam("timer_rates/path",       _rate_path_timer_);
+    param_loader.loadParam("timer_rates/fast",       _rate_fast_timer_);
 
 
     if (!param_loader.loadedSuccessfully()) {
@@ -221,6 +240,7 @@ namespace mrs_octomap_planner
 
     timer_main_       = nh_.createTimer(ros::Rate(_rate_main_timer_), &Explorer::timerMain,      this);
     timer_path_       = nh_.createTimer(ros::Rate(_rate_path_timer_), &Explorer::timerPath,      this);
+    timer_replanner_  = nh_.createTimer(ros::Rate(_rate_fast_timer_), &Explorer::timerReplanner, this);
 
 
     transformer_ = std::make_unique<mrs_lib::Transformer>("MrsExplorer");
@@ -259,6 +279,15 @@ namespace mrs_octomap_planner
   }
 
 
+  // periodic fast timer (rate set by timer_rates/fast in explorer.yaml); currently a no-op placeholder
+  void Explorer::timerReplanner([[maybe_unused]] const ros::TimerEvent& evt)
+  {
+    if (!is_initialized_) {
+      return;
+    }
+  }
+
+
   // periodic path-update timer: replans via makePath(), publishes the new path as debug rays on bv_path_, then requests a trajectory via makeTrajectory()
   void Explorer::timerPath([[maybe_unused]] const ros::TimerEvent& evt)
   {
@@ -289,21 +318,27 @@ namespace mrs_octomap_planner
       return;
     }
 
-    for (int i=0; i+1<path_.size(); i++)
+    for (int i=0; i+1<path_.points.size(); i++)
     {
-      bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(path_[i].x(),   path_[i].y(),   path_[i].z()),
-                                              Eigen::Vector3d(path_[i+1].x(), path_[i+1].y(), path_[i+1].z())),
-                                                1.0, 0.0, 1.0, 1.0);  
-    } 
+      bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(path_.points[i].x(),   path_.points[i].y(),   path_.points[i].z()),
+                                              Eigen::Vector3d(path_.points[i+1].x(), path_.points[i+1].y(), path_.points[i+1].z())),
+                                                1.0, 0.0, 1.0, 1.0);
+    }
     bv_path_->publish();
     bv_path_->clearBuffers();
 
 
-    bool success = makeTrajectory();
+    auto trajectory = makeTrajectory(path_);
 
-    if (!success)
+    if (!trajectory)
     {
       ROS_WARN("[MrsExplorer]: trajectory generation falied");
+      return;
+    }
+
+    if (!publishTrajectory(*trajectory, path_.id))
+    {
+      ROS_WARN("[MrsExplorer]: trajectory reference publishing failed");
       return;
     }
 
@@ -356,7 +391,6 @@ namespace mrs_octomap_planner
 
 
 
-
 // (re)plans the flight path: checks the current MPC prediction for imminent collisions (triggers an emergency brake to last_free_point_ if so), otherwise, once close enough to goal_/next_goal_,
 // calls tsp_solver's ~set_start_out/~solve_out services for a fresh global viewpoint tour and then prm_solver's ~find_simplified_path_out per tour sub-segment to build path_; returns true iff path_ was updated
 bool Explorer::makePath()
@@ -365,30 +399,75 @@ bool Explorer::makePath()
 
   ros::Time t0 = ros::Time::now();
 
+  octomap::point3d start_coord;
+  mrs_msgs::MpcPredictionFullState prediction;
+  octomath::Vector3 velocity;
+  if (!getCurrentStateAndPrediction(start_coord, prediction, velocity))
+  {
+    return false;
+  }
+
+  // check if current path from predition is in collision
+  if (checkImminentCollision(start_coord, prediction))
+  {
+    return true;
+  }
+
+  if (!shouldReplan(start_coord, prediction))
+  {
+    return false;
+  }
+  ROS_ERROR("replanning");
+  goal_ = start_coord;
+
+  current_viewpoint_ = start_coord;
+
+  std::vector<octomap::point3d> glob_path;
+  if (!solveTsp(velocity, glob_path))
+  {
+    return false;
+  }
+
+  visualizeGlobalPath(glob_path);
+
+  std::vector<octomap::point3d> path(0);
+  std::vector<octomap::point3d> sub_global_path(0);
+  if (!buildLocalPath(start_coord, glob_path, velocity, path, sub_global_path))
+  {
+    return false;
+  }
+
+  return finalizePath(path, sub_global_path, t0);
+}
+
+
+// gets current position and MPC full-state prediction, deriving start_coord/prediction/velocity; returns false (with a throttled warning) if either is unavailable
+bool Explorer::getCurrentStateAndPrediction(octomap::point3d& start_coord, mrs_msgs::MpcPredictionFullState& prediction, octomath::Vector3& velocity)
+{
   // get current position
   auto res_position = getPosition();
   if (!res_position){
     ROS_WARN_THROTTLE(1.0,"[MRsExplorer] has no reference");
     return false;
   }
-  auto pos = res_position.value().reference.position;
-  octomap::point3d start_coord(pos.x, pos.y, pos.z);
+  start_coord = octomap_planner_utils::pointToOctomap(res_position.value().reference.position);
 
-  // if ((start_coord -octomap::point3d(0.0,0.0,0.0)).norm()<0.01){
-  //     ROS_ERROR("invalid drone position");
-  //     return false;
-  // }
-  
   // extract tracker predition
   auto res_prediction = getFullStatePrediction();
   if (!res_prediction){
     ROS_WARN_THROTTLE(1.0,"[MRsExplorer] has no full state prediction");
     return false;
   }
-  auto prediction = res_prediction.value();
-  octomath::Vector3 velocity(prediction.velocity[0].x,prediction.velocity[0].y,prediction.velocity[0].z);
-  
-  // check if current path from predition is in collision
+
+  prediction = res_prediction.value();
+  velocity   = octomath::Vector3(prediction.velocity[0].x,prediction.velocity[0].y,prediction.velocity[0].z);
+
+  return true;
+}
+
+// checks if current path from prediction is in collision; on collision, sets an emergency brake path to last_free_point_ and returns true
+bool Explorer::checkImminentCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
+{
   bool isInFreeSpace = true;
   std::shared_ptr<OcTree_t> tree;
   {
@@ -404,8 +483,9 @@ bool Explorer::makePath()
     if (!isInFreeSpace)
     {
       ROS_ERROR("EMERGENCY REPLAN");
-      path_ = {start_coord, last_free_point_};
-      goal_ = path_.back();
+      path_.points = {start_coord, last_free_point_};
+      path_.id     = next_path_id_++;
+      goal_ = path_.points.back();
       ROS_WARN("[MrsExplorer]: collision detected in trajectory, replanning");
       braking_ = true;
       return true;
@@ -415,59 +495,68 @@ bool Explorer::makePath()
       last_free_point_ = octomap::point3d(point.x,point.y,point.z);
     }
   }
+  return false;
+}
+
+// if is in collision recalculate path, otherwise check if drone is near end of the path and replan, othervise do nothing
+bool Explorer::shouldReplan(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
+{
   if (!first_path_planend_){
     goal_ = start_coord;
     next_goal_ = goal_;
     // ros::Duration(5.0).sleep();
   }
-  // if is in collision recalculate path, otherwise check if drone is near end of the path and replan, othervise do nothing 
   geometry_msgs::Point p = prediction.position.back();
   if (start_coord.distance(goal_) > _replanning_distance_ && start_coord.distance(next_goal_) > _replanning_distance_) // octomap::point3d(p.x,p.y,p.z)
   {
     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, too far from goal %f", start_coord.distance(octomap::point3d(p.x,p.y,p.z)));
     return false;
   }
-  ROS_ERROR("replanning");
-  goal_ = start_coord;
+  return true;
+}
 
-  current_viewpoint_ = start_coord;
-  
-  std::vector<octomap::point3d> glob_path;
+// calls tsp_solver's ~set_start_out/~solve_out services to obtain a fresh global viewpoint tour into glob_path
+bool Explorer::solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path)
+{
+  ROS_ERROR("TSP solve start");
+
+  tsp_solver::SetStart set_start_srv;
+  set_start_srv.request.position.x = current_viewpoint_.x();
+  set_start_srv.request.position.y = current_viewpoint_.y();
+  set_start_srv.request.position.z = current_viewpoint_.z();
+  if (!sc_tsp_set_start_.call(set_start_srv) || !set_start_srv.response.success)
   {
-    ROS_ERROR("TSP solve start");
-
-    tsp_solver::SetStart set_start_srv;
-    set_start_srv.request.position.x = current_viewpoint_.x();
-    set_start_srv.request.position.y = current_viewpoint_.y();
-    set_start_srv.request.position.z = current_viewpoint_.z();
-    if (!sc_tsp_set_start_.call(set_start_srv) || !set_start_srv.response.success)
-    {
-      ROS_WARN("[MrsExplorer]: failed to set TSP start");
-      return false;
-    }
-    ROS_ERROR("TSP start set");
-
-    tsp_solver::Solve solve_srv;
-    solve_srv.request.velocity.x = velocity.x();
-    solve_srv.request.velocity.y = velocity.y();
-    solve_srv.request.velocity.z = velocity.z();
-    if (!sc_tsp_solve_.call(solve_srv) || !solve_srv.response.success)
-    {
-      ROS_WARN("[MrsExplorer]: TSP tour not found");
-      return false;
-    }
-    for (auto &p : solve_srv.response.path)
-    {
-      glob_path.emplace_back(p.x, p.y, p.z);
-    }
-    ROS_ERROR("TSP solve end");
+    ROS_WARN("[MrsExplorer]: failed to set TSP start");
+    return false;
   }
+  ROS_ERROR("TSP start set");
+
+  tsp_solver::Solve solve_srv;
+  solve_srv.request.velocity.x = velocity.x();
+  solve_srv.request.velocity.y = velocity.y();
+  solve_srv.request.velocity.z = velocity.z();
+  if (!sc_tsp_solve_.call(solve_srv) || !solve_srv.response.success)
+  {
+    ROS_WARN("[MrsExplorer]: TSP tour not found");
+    return false;
+  }
+  for (auto &p : solve_srv.response.path)
+  {
+    glob_path.emplace_back(p.x, p.y, p.z);
+  }
+  ROS_ERROR("TSP solve end");
 
   if (glob_path.size() <= 1)
   {
     ROS_WARN("[MrsExplorer]: TSP tour not found");
     return false;
   }
+  return true;
+}
+
+// draws the freshly solved global TSP tour as debug rays on bv_path_
+void Explorer::visualizeGlobalPath(const std::vector<octomap::point3d>& glob_path)
+{
   // ROS_ERROR("glob path size %i",glob_path.size());
   for (int i=0; i<glob_path.size()-1; i++)
   {
@@ -476,17 +565,19 @@ bool Explorer::makePath()
     auto v1 = glob_path[i+1];
     bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(v0.x(), v0.y(), v0.z()),
                                             Eigen::Vector3d(v1.x(), v1.y(), v1.z())),
-                                            0.0, 1.0, 0.0, 1.0);  
+                                            0.0, 1.0, 0.0, 1.0);
   }
+}
 
-  // find a path to first reachable viewpoint on global path
-  // add only path to first viewpoint to make into trajectory later
-  std::vector<octomap::point3d> path(0);
+// finds a path to first reachable viewpoint on global path, calling prm_solver's ~find_simplified_path_out per tour sub-segment;
+// adds only the path to that first viewpoint to make into a trajectory later
+bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::vector<octomap::point3d>& glob_path, const octomath::Vector3& velocity,
+                               std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path)
+{
   int i = 0;
   int j = 0;
   double path_distance = 0.0;
   // while((path.size() == 0 && i < glob_path.size()) || start_coord.distance(path.back()) < _skip_path_point_distance_)
-  std::vector<octomap::point3d> sub_global_path(0);
   sub_global_path.push_back(start_coord);
   path.push_back(start_coord);
 
@@ -530,20 +621,26 @@ bool Explorer::makePath()
     }
     j++;
   }
+  return true;
+}
 
+// trims the leading (already-occupied) start point, commits path into path_/goal_/next_goal_, and logs replanning time
+bool Explorer::finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path, const ros::Time& t0)
+{
   path.erase(path.begin());
-  path_ = path;
+  path_.points = path;
+  path_.id     = next_path_id_++;
 
-  if (path_.size() > 0)
+  if (path_.points.size() > 0)
   {
-    goal_ = sub_global_path[1]; // path_.back();
+    goal_ = sub_global_path[1]; // path_.points.back();
     next_goal_ = path.back();
     first_path_planend_ = true;
     ros::Duration dt = ros::Time::now() - t0;
     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: time to replan %.1fms", dt.toNSec()/1000000.0);
     return true;
   }
-  
+
   ROS_WARN("[MRsExplorer] no suitable frontiers");
   return false;
 }
@@ -580,8 +677,8 @@ bool Explorer::checkTrajectoryCollision()
 }
   
 
-// converts path_ into a trajectory via the trajectory_generation_out (mrs_msgs/GetPathSrv) service, then publishes it fly_now=true via trajectory_reference_out (mrs_msgs/TrajectoryReferenceSrv), incrementing path_id_ as the input_id
-bool  Explorer::makeTrajectory()
+// converts the given path into a trajectory via the trajectory_generation_out (mrs_msgs/GetPathSrv) service
+std::optional<mrs_msgs::TrajectoryReference> Explorer::makeTrajectory(const Path_t& path)
 {
   mrs_msgs::GetPathSrv srv_get_path;
   auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
@@ -591,7 +688,7 @@ bool  Explorer::makeTrajectory()
   srv_get_path.request.path.relax_heading   = true;
   srv_get_path.request.path.use_heading     = false;
 
-  for (auto &point : path_)
+  for (auto &point : path.points)
   {
     mrs_msgs::Reference reference;
     reference.position.x = point.x();
@@ -600,67 +697,49 @@ bool  Explorer::makeTrajectory()
     srv_get_path.request.path.points.push_back(reference);
   }
 
-  {
-    bool success = sc_get_trajectory_.call(srv_get_path);
+  bool success = sc_get_trajectory_.call(srv_get_path);
 
-    if (!success) {
-      ROS_WARN("[Explorer]: service call for trajectory failed");
-      return false;
-    } else {
-      if (!srv_get_path.response.success) {
-        ROS_WARN("[Explorer]: service call for trajectory failed: '%s'", srv_get_path.response.message.c_str());
-        return false;
-      }
-    }
+  if (!success) {
+    ROS_WARN("[Explorer]: service call for trajectory failed");
+    return std::nullopt;
   }
 
-  auto trajectory = srv_get_path.response.trajectory;
-  mrs_msgs::TrajectoryReferenceSrv srv_trajectory_reference;
-  srv_trajectory_reference.request.trajectory         = srv_get_path.response.trajectory;
-  srv_trajectory_reference.request.trajectory.fly_now = true;
-  path_id_++;
-  srv_trajectory_reference.request.trajectory.input_id = path_id_;
-  {
-    bool success = sc_trajectory_reference_.call(srv_trajectory_reference);
+  if (!srv_get_path.response.success) {
+    ROS_WARN("[Explorer]: service call for trajectory failed: '%s'", srv_get_path.response.message.c_str());
+    return std::nullopt;
+  }
 
-    if (!success) {
-      ROS_WARN("[Explorer]: service call for trajectory reference failed");
-      return false;
-    } else {
-      if (!srv_trajectory_reference.response.success) {
-        ROS_WARN("[Explorer]: service call for trajectory reference failed: '%s'", srv_trajectory_reference.response.message.c_str());
-        return false;
-      }
-    }
+  return srv_get_path.response.trajectory;
+}
+
+// publishes the given trajectory (fly_now=true) via trajectory_reference_out (mrs_msgs/TrajectoryReferenceSrv), using id as the input_id
+bool Explorer::publishTrajectory(const mrs_msgs::TrajectoryReference& trajectory, int id)
+{
+  mrs_msgs::TrajectoryReferenceSrv srv_trajectory_reference;
+  srv_trajectory_reference.request.trajectory          = trajectory;
+  srv_trajectory_reference.request.trajectory.fly_now   = true;
+  srv_trajectory_reference.request.trajectory.input_id  = id;
+
+  bool success = sc_trajectory_reference_.call(srv_trajectory_reference);
+
+  if (!success) {
+    ROS_WARN("[Explorer]: service call for trajectory reference failed");
+    return false;
+  }
+
+  if (!srv_trajectory_reference.response.success) {
+    ROS_WARN("[Explorer]: service call for trajectory reference failed: '%s'", srv_trajectory_reference.response.message.c_str());
+    return false;
   }
 
   return true;
 }
 
-// returns the tracker's full-state MPC prediction transformed into the octree frame, or nullopt if diagnostics/tracker_cmd are stale (>2s) or the frame transform is unavailable
+// tracker's full-state MPC prediction (in the octree frame), delegating to octomap_planner_utils::getFullStatePrediction using the tracker_cmd/diagnostics subscribers
 std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction()
 {
-  const bool got_control_manager_diag = sh_control_manager_diag_.hasMsg() && (ros::Time::now() - sh_control_manager_diag_.lastMsgTime()).toSec() < 2.0;
-  const bool got_tracker_cmd   = sh_tracker_cmd_.hasMsg() && (ros::Time::now() - sh_tracker_cmd_.lastMsgTime()).toSec() < 2.0;
-  mrs_msgs::MpcPredictionFullState prediction;
-  if (got_control_manager_diag && got_tracker_cmd)
-  {
-
-    prediction  = sh_tracker_cmd_.getMsg()->full_state_prediction;
-    auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
-    auto ret = transformer_->getTransform(prediction.header.frame_id, octree_frame, prediction.header.stamp);
-
-    if (!ret) {
-      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: could not transform position cmd to the map frame! can not check for potential collisions!");
-      return {};
-    }
-  } 
-  else
-  {
-    ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: could not get controller prediction");
-    return {};
-  }
-  return prediction;
+  auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+  return octomap_planner_utils::getFullStatePrediction(sh_control_manager_diag_, sh_tracker_cmd_, octree_frame, *transformer_, "[MrsExplorer]");
 }
 
 // current UAV position (in the octree frame), delegating to octomap_planner_utils::getPosition using the tracker_cmd/diagnostics subscribers

@@ -121,6 +121,20 @@ AABB localZoneFromPosition(geometry_msgs::Point position, AABB flight_zone, doub
   return makeIntersection(local_zone, flight_zone);
 }
 
+octomap::point3d pointToOctomap(const geometry_msgs::Point& p)
+{
+  return octomap::point3d(p.x, p.y, p.z);
+}
+
+geometry_msgs::Point octomapToPoint(const octomap::point3d& p)
+{
+  geometry_msgs::Point res;
+  res.x = p.x();
+  res.y = p.y();
+  res.z = p.z();
+  return res;
+}
+
 AABB aabbSmartFromCenter(octomap::point3d c, double x, double y,double z, double floor){
   AABB res = aabbFromCenter(c,x,y,z);
 
@@ -301,6 +315,34 @@ std::optional<mrs_msgs::ReferenceStamped> getPosition(
     return {};
   }
   return res;
+}
+
+std::optional<mrs_msgs::MpcPredictionFullState> getFullStatePrediction(
+    mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>& sh_control_manager_diag,
+    mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>&            sh_tracker_cmd,
+    const std::string&                                              octree_frame,
+    mrs_lib::Transformer&                                           transformer,
+    const std::string&                                              log_tag)
+{
+  const bool got_control_manager_diag = sh_control_manager_diag.hasMsg() && (ros::Time::now() - sh_control_manager_diag.lastMsgTime()).toSec() < 2.0;
+  const bool got_tracker_cmd          = sh_tracker_cmd.hasMsg() && (ros::Time::now() - sh_tracker_cmd.lastMsgTime()).toSec() < 2.0;
+  mrs_msgs::MpcPredictionFullState prediction;
+  if (got_control_manager_diag && got_tracker_cmd)
+  {
+    prediction  = sh_tracker_cmd.getMsg()->full_state_prediction;
+    auto ret = transformer.getTransform(prediction.header.frame_id, octree_frame, prediction.header.stamp);
+
+    if (!ret) {
+      ROS_WARN_THROTTLE(1.0, "%s: could not transform position cmd to the map frame! can not check for potential collisions!", log_tag.c_str());
+      return {};
+    }
+  }
+  else
+  {
+    ROS_WARN_THROTTLE(1.0, "%s: could not get controller prediction", log_tag.c_str());
+    return {};
+  }
+  return prediction;
 }
 
 }

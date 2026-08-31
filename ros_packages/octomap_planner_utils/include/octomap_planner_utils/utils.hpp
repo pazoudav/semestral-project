@@ -18,6 +18,7 @@
 #include <mrs_msgs/ReferenceStamped.h>
 #include <mrs_msgs/TrackerCommand.h>
 #include <mrs_msgs/ControlManagerDiagnostics.h>
+#include <mrs_msgs/MpcPredictionFullState.h>
 #include <geometry_msgs/Point.h>
 
 
@@ -94,6 +95,11 @@ AABB aabbSmartFromCenter(octomap::point3d c, double x, double y,double z, double
 // AABB centered on position, sized (width, width, height), clamped to flight_zone
 AABB localZoneFromPosition(geometry_msgs::Point position, AABB flight_zone, double width, double height);
 
+// converts a geometry_msgs::Point to an octomap::point3d
+octomap::point3d pointToOctomap(const geometry_msgs::Point& p);
+// converts an octomap::point3d to a geometry_msgs::Point
+geometry_msgs::Point octomapToPoint(const octomap::point3d& p);
+
 // true if point p lies within (inclusive of) AABB bbx0
 bool intersect(AABB bbx0, octomap::point3d p);
 // true if the two AABBs overlap (tested via corner containment in both directions)
@@ -128,6 +134,14 @@ octomap::point3d getSampleFromAABB(AABB a);
 
 // get the UAV's current position (tracker command), transformed into octree_frame; assumes the octree mutex has already been locked by the caller to read octree_frame
 std::optional<mrs_msgs::ReferenceStamped> getPosition(
+    mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>& sh_control_manager_diag,
+    mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>&            sh_tracker_cmd,
+    const std::string&                                              octree_frame,
+    mrs_lib::Transformer&                                           transformer,
+    const std::string&                                              log_tag);
+
+// get the tracker's full-state MPC prediction, transformed into octree_frame; assumes the octree mutex has already been locked by the caller to read octree_frame
+std::optional<mrs_msgs::MpcPredictionFullState> getFullStatePrediction(
     mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>& sh_control_manager_diag,
     mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>&            sh_tracker_cmd,
     const std::string&                                              octree_frame,
