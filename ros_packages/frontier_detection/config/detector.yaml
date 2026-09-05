@@ -15,7 +15,7 @@ frontiers:
   min_svd_eigen_value: 64
   size_decrease_ratio: 0.95
   viewpoint:
-    sample_attempts: 64
+    sample_attempts: 32
     sample_radius: 3.5
     sample_height: 2.0
     max_distance: 3.8

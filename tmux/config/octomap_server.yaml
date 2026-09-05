@@ -34,22 +34,25 @@ global_map:
   # the rate of inserting the local map into the global map
   creation_rate: 2.0 # [Hz]
 
+  publish_full: false # should publish map with full probabilities?
+  publish_binary: true # should publish map with binary occupancy?
+
 local_map:
 
   # the bounding box distance of the local map
   size:
-    max_width: 15 # [m] max width of the local map
-    max_height: 15 # [m] max height of the local map
-    min_width: 10 # [m] min width of the local map
-    min_height: 10 # [m] min height of the local map
+    max_width: 20 # [m] max width of the local map
+    max_height: 20 # [m] max height of the local map
+    min_width: 12 # [m] min width of the local map
+    min_height: 12 # [m] min height of the local map
     duty_high_threshold: 0.45 # [s] if inserting scan takes more time than this, decrease local map size
     duty_low_threshold: 0.2 # [s] if inserting scan takes less time than this, increase local map size
 
   # the publisher rate of the local map
-  publisher_rate: 8.0 # [Hz]
+  publisher_rate: 4.0 # [Hz]
 
-  publish_full: true # should publish map with full probabilities?
-  publish_binary: false # should publish map with binary occupancy?
+  publish_full: false # should publish map with full probabilities?
+  publish_binary: true # should publish map with binary occupancy?
   
 sensor_params:
 

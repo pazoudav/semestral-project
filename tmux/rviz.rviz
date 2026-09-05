@@ -775,7 +775,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
-      Enabled: true
+      Enabled: false
       Name: ROSA
   Enabled: true
   Global Options:

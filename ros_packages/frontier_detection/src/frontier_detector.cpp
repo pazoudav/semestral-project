@@ -29,7 +29,7 @@ namespace frontier_detection
 {
 
   using OcTree_t          = octomap::OcTree;
-  using OcTreeSharedPtr_t = std::shared_ptr<octomap::OcTree>;
+  using OcTreeUniquePtr_t = std::unique_ptr<octomap::OcTree>;
 
 
   // one frontier's worth of drawing data, copied out of a FIS so the visualization worker never touches FrontierManager's own state
@@ -48,6 +48,7 @@ namespace frontier_detection
     std::string                  frame_id;
     double                       resolution;
     octomap_planner_utils::AABB  zone;
+    octomap_planner_utils::AABB  tree_bbox;
     std::vector<FrontierVis>     frontiers;
   };
 
@@ -89,7 +90,7 @@ namespace frontier_detection
 
       std::mutex                                mutex_octree_;
       std::mutex                                mutex_frontiers_;
-      std::shared_ptr<OcTree_t>                 octree_ = nullptr;
+      std::unique_ptr<OcTree_t>                 octree_ = nullptr; // persistent map built up purely by merging in successive local-zone octomaps
       std::string                               octree_frame_;
       std::shared_ptr<mrs_lib::BatchVisualizer> bv_frontiers_;
       bool                                       bv_map_frame_set_ = false;
@@ -106,22 +107,30 @@ namespace frontier_detection
       std::optional<VisualizationSnapshot> pending_vis_snapshot_;
       bool                     vis_shutdown_ = false;
 
-      mrs_lib::SubscribeHandler<octomap_msgs::Octomap>                sh_octomap_;
+      // background tree cleanup worker: retired octrees (replaced by a fresher one each callback) are handed off here so that
+      // freeing every node of a large OcTree happens off the octomap-callback thread instead of inside the callback itself.
+      std::thread                             tree_cleanup_thread_;
+      std::mutex                              tree_cleanup_mutex_;
+      std::condition_variable                 tree_cleanup_cv_;
+      std::vector<std::unique_ptr<OcTree_t>>  pending_tree_cleanup_;
+      bool                                     tree_cleanup_shutdown_ = false;
+
+      mrs_lib::SubscribeHandler<octomap_msgs::Octomap>                sh_octomap_local_;
       mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>              sh_tracker_cmd_;
       mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>   sh_control_manager_diag_;
 
       ros::Publisher pub_frontiers_;
 
-      void callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg);
+      // merges each incoming local-zone octomap into the persistent octree_ (seeding it on the first message), then
+      // locates the UAV, derives a local search zone, runs FrontierManager::processNewMap, and publishes viz + frontiers
+      void callbackOctomapLocal(const octomap_msgs::Octomap::ConstPtr msg);
       void controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg);
 
-      void timeoutOctomap(const std::string& topic, const ros::Time& last_msg);
+      void timeoutOctomapLocal(const std::string& topic, const ros::Time& last_msg);
       void timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg);
 
       // current UAV reference position in the octomap's frame, derived from tracker command + control-manager diagnostics freshness
       std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> getPosition();
-      // decodes an incoming octomap message (binary or full) into an OcTree, or nullopt if the message is empty
-      std::optional<OcTreeSharedPtr_t>                                 msgToMap(const octomap_msgs::OctomapConstPtr octomap);
       // builds and publishes a FrontierArray with the single best (highest-coverage) viewpoint per valid frontier
       void                                                             publishFrontiers();
 
@@ -129,6 +138,11 @@ namespace frontier_detection
       void enqueueVisualization();
       // background loop: waits for a new snapshot, then draws it into bv_frontiers_ and publishes/clears it
       void visualizationWorker();
+
+      // hands a retired octree off to the cleanup worker instead of destroying it (and freeing every one of its nodes) on the caller's thread
+      void retireTree(std::unique_ptr<OcTree_t> tree);
+      // background loop: waits for retired octrees and destroys them off the octomap-callback thread
+      void treeCleanupWorker();
   };
 
 
@@ -181,9 +195,9 @@ namespace frontier_detection
     shopts.queue_size         = 1;
     shopts.transport_hints    = ros::TransportHints().tcpNoDelay();
 
-    sh_octomap_ = mrs_lib::SubscribeHandler<octomap_msgs::Octomap>(shopts, "octomap_in", ros::Duration(5.0),
-                                                                    &Detector::timeoutOctomap, this,
-                                                                    &Detector::callbackOctomap, this);
+    sh_octomap_local_ = mrs_lib::SubscribeHandler<octomap_msgs::Octomap>(shopts, "octomap_local_in", ros::Duration(5.0),
+                                                                          &Detector::timeoutOctomapLocal, this,
+                                                                          &Detector::callbackOctomapLocal, this);
     sh_tracker_cmd_          = mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>(shopts, "tracker_cmd_in", ros::Duration(3.0), &Detector::timeoutTrackerCmd, this);
     sh_control_manager_diag_ = mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>(shopts, "diagnostics_in", &Detector::controlManagerDiagCallback, this);
 
@@ -215,6 +229,7 @@ namespace frontier_detection
     map_ready_ = false;
 
     vis_thread_ = std::thread(&Detector::visualizationWorker, this);
+    tree_cleanup_thread_ = std::thread(&Detector::treeCleanupWorker, this);
 
     is_initialized_ = true;
     ROS_INFO("[Detector]: initialized!");
@@ -230,28 +245,57 @@ namespace frontier_detection
     if (vis_thread_.joinable()) {
       vis_thread_.join();
     }
+
+    {
+      std::scoped_lock lock(tree_cleanup_mutex_);
+      tree_cleanup_shutdown_ = true;
+    }
+    tree_cleanup_cv_.notify_all();
+    if (tree_cleanup_thread_.joinable()) {
+      tree_cleanup_thread_.join();
+    }
   }
 
-  // on each new octomap: decodes it, locates the UAV, derives a local search zone around it, runs FrontierManager::processNewMap, then publishes viz + frontiers
-  void Detector::callbackOctomap(const octomap_msgs::Octomap::ConstPtr msg)
+  // on each new local-zone octomap: merges it into the persistent octree_ (seeding it on the first message), locates
+  // the UAV, derives a local search zone around it, runs FrontierManager::processNewMap, then publishes viz + frontiers.
+  // octree_ is never populated from a global-map topic; it exists purely as the accumulation of these local updates.
+  void Detector::callbackOctomapLocal(const octomap_msgs::Octomap::ConstPtr msg)
   {
     if (!is_initialized_) {
       return;
     }
 
-    ROS_INFO("[Detector]: octomap recieved");
+    ros::WallTime t_start = ros::WallTime::now();
+    ros::WallTime t_start_glob = ros::WallTime::now();
 
-    std::optional<OcTreeSharedPtr_t> octree_local = msgToMap(msg);
+    OcTreeUniquePtr_t local_tree(dynamic_cast<OcTree_t*>(octomap_msgs::msgToMap(*msg)));
 
-    if (!octree_local) {
-      ROS_WARN_THROTTLE(1.0, "[Detector]: received map is empty!");
+    if (!local_tree) {
+      ROS_WARN_THROTTLE(1.0, "[Detector]: received local map is empty!");
       return;
     }
 
-    mrs_lib::set_mutexed(mutex_octree_, octree_local.value(), octree_);
-    mrs_lib::set_mutexed(mutex_octree_, msg->header.frame_id, octree_frame_);
+    ROS_INFO("loadMsg    %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
+
+    {
+      std::scoped_lock lock(mutex_octree_);
+      if (!octree_) {
+        // seed the persistent global tree from the first local map received
+        octree_ = std::move(local_tree);
+      }
+      else {
+        local_tree->expand();
+        octomap_planner_utils::mergeInto(*local_tree, *octree_);
+      }
+      octree_frame_ = msg->header.frame_id;
+    }
+    retireTree(std::move(local_tree));
 
     map_ready_ = true;
+
+    ROS_INFO("mergeLocal %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
 
     auto res = getPosition();
     if (!res) {
@@ -259,38 +303,43 @@ namespace frontier_detection
       return;
     }
 
-    std::shared_ptr<OcTree_t> tree;
-    {
-      std::scoped_lock lock(mutex_octree_);
-      tree = std::make_shared<OcTree_t>(*octree_);
-    }
-
     auto pos = res.value().reference.position;
-    octomap::point3d start_coord(pos.x, pos.y, pos.z);
-    octomap::OcTreeKey start_key = tree->coordToKey(start_coord);
-    octomap::OcTreeNode* start_node = tree->search(start_key);
-    start_coord = tree->keyToCoord(start_key);
-
-    if (!start_node || tree->isNodeOccupied(start_node)) {
-      ROS_WARN("[Detector]: start not present in tree or occupied");
-      return;
-    }
-
-    // extract frontiers only from local area, frontiers outside cannot change
-    geometry_msgs::Point start_point;
-    start_point.x = start_coord.x();
-    start_point.y = start_coord.y();
-    start_point.z = start_coord.z();
-    octomap_planner_utils::AABB local_zone = octomap_planner_utils::localZoneFromPosition(start_point, flight_zone_, _local_zone_width_, _local_zone_height_);
 
     {
-      std::scoped_lock lock(mutex_frontiers_);
-      frontier_manager_->processNewMap(tree, local_zone, start_key);
+      // octree_ is held locked from the start-key lookup through processNewMap so this callback's
+      // reads/traversal of the tree can't race with another callback's concurrent mergeInto (both
+      // can run concurrently under the MT nodelet handle) mutating the same nodes mid-read
+      std::scoped_lock lock(mutex_octree_, mutex_frontiers_);
+
+      octomap::point3d start_coord(pos.x, pos.y, pos.z);
+      octomap::OcTreeKey start_key = octree_->coordToKey(start_coord);
+      octomap::OcTreeNode* start_node = octree_->search(start_key);
+      start_coord = octree_->keyToCoord(start_key);
+
+      if (!start_node || octree_->isNodeOccupied(start_node)) {
+        ROS_WARN("[Detector]: start not present in tree or occupied");
+        return;
+      }
+
+      // extract frontiers only from local area, frontiers outside cannot change
+      octomap_planner_utils::AABB local_zone = octomap_planner_utils::localZoneFromPosition(start_coord, flight_zone_, _local_zone_width_, _local_zone_height_);
+
+      ROS_INFO("preprocess %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+      t_start = ros::WallTime::now();
+
+      frontier_manager_->processNewMap(octree_.get(), local_zone, start_key);
     }
+
+    ROS_INFO("search     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
 
     publishFrontiers();
-
     enqueueVisualization();
+
+    ROS_INFO("pubAndViz  %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("full run   %4.0fms,",  1000*(ros::WallTime::now() - t_start_glob).toSec());
+
+    ROS_INFO("-----------------------------------");
   }
 
   void Detector::publishFrontiers()
@@ -332,7 +381,15 @@ namespace frontier_detection
   {
     VisualizationSnapshot snapshot;
     snapshot.frame_id = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
-    snapshot.resolution = mrs_lib::get_mutexed(mutex_octree_, octree_)->getResolution();
+    {
+      std::scoped_lock lock(mutex_octree_);
+      snapshot.resolution = octree_->getResolution();
+      // double min_x, min_y, min_z, max_x, max_y, max_z;
+      // octree_->getMetricMin(min_x, min_y, min_z);
+      // octree_->getMetricMax(max_x, max_y, max_z);
+      // snapshot.tree_bbox.min = octomap::point3d(min_x, min_y, min_z);
+      // snapshot.tree_bbox.max = octomap::point3d(max_x, max_y, max_z);
+    }
 
     {
       std::scoped_lock lock(mutex_frontiers_);
@@ -426,8 +483,50 @@ namespace frontier_detection
         bv_frontiers_->addCuboid(c, 1.0, 1.0, 1.0, 1.0, false);
       }
 
+      // {
+      //   Eigen::Vector3d center((snapshot.tree_bbox.min.x() + snapshot.tree_bbox.max.x()) / 2.0,
+      //                           (snapshot.tree_bbox.min.y() + snapshot.tree_bbox.max.y()) / 2.0,
+      //                           (snapshot.tree_bbox.min.z() + snapshot.tree_bbox.max.z()) / 2.0);
+      //   Eigen::Vector3d           size(snapshot.tree_bbox.max.x() - snapshot.tree_bbox.min.x(), snapshot.tree_bbox.max.y() - snapshot.tree_bbox.min.y(),
+      //                       snapshot.tree_bbox.max.z() - snapshot.tree_bbox.min.z());
+      //   Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+      //   mrs_lib::geometry::Cuboid c(center, size, orientation);
+      //   bv_frontiers_->addCuboid(c, 0.0, 0.6, 1.0, 0.15, true);
+      // }
+
       bv_frontiers_->publish();
       bv_frontiers_->clearBuffers();
+    }
+  }
+
+  void Detector::retireTree(std::unique_ptr<OcTree_t> tree)
+  {
+    if (!tree) {
+      return;
+    }
+    {
+      std::scoped_lock lock(tree_cleanup_mutex_);
+      pending_tree_cleanup_.push_back(std::move(tree));
+    }
+    tree_cleanup_cv_.notify_one();
+  }
+
+  // runs on its own thread for the lifetime of the nodelet: destroys retired octrees here so the (potentially expensive,
+  // recursive) node-by-node teardown of a large OcTree never happens on the octomap-callback thread.
+  void Detector::treeCleanupWorker()
+  {
+    while (true)
+    {
+      std::vector<std::unique_ptr<OcTree_t>> trees;
+      {
+        std::unique_lock lock(tree_cleanup_mutex_);
+        tree_cleanup_cv_.wait(lock, [this] { return tree_cleanup_shutdown_ || !pending_tree_cleanup_.empty(); });
+        if (tree_cleanup_shutdown_) {
+          return;
+        }
+        trees = std::move(pending_tree_cleanup_);
+      }
+      // trees actually destroyed here, outside the lock and off the octomap-callback thread
     }
   }
 
@@ -436,12 +535,12 @@ namespace frontier_detection
     // only used for freshness checks via the SubscribeHandler, see getPosition()
   }
 
-  void Detector::timeoutOctomap(const std::string& topic, const ros::Time& last_msg)
+  void Detector::timeoutOctomapLocal(const std::string& topic, const ros::Time& last_msg)
   {
-    if (!is_initialized_ || !sh_octomap_.hasMsg()) {
+    if (!is_initialized_ || !sh_octomap_local_.hasMsg()) {
       return;
     }
-    ROS_WARN_THROTTLE(1.0, "[Detector]: octomap timeout!");
+    ROS_WARN_THROTTLE(1.0, "[Detector]: local octomap timeout!");
   }
 
   void Detector::timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg)
@@ -457,27 +556,6 @@ namespace frontier_detection
     auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
     return octomap_planner_utils::getPosition(sh_control_manager_diag_, sh_tracker_cmd_, octree_frame, *transformer_, "[Detector]");
   }
-
-  std::optional<OcTreeSharedPtr_t> Detector::msgToMap(const octomap_msgs::OctomapConstPtr octomap)
-  {
-    octomap::AbstractOcTree* abstract_tree;
-
-    if (octomap->binary) {
-      abstract_tree = octomap_msgs::binaryMsgToMap(*octomap);
-    }
-    else {
-      abstract_tree = octomap_msgs::fullMsgToMap(*octomap);
-    }
-
-    if (!abstract_tree) {
-      ROS_WARN("[Detector]: Octomap message is empty! can not convert to OcTree");
-      return {};
-    }
-    else {
-      return { OcTreeSharedPtr_t(dynamic_cast<OcTree_t*>(abstract_tree)) };
-    }
-  }
-
 
 }
 

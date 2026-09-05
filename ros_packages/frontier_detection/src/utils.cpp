@@ -4,7 +4,7 @@
 namespace frontier_detection
 {
 
-octomap::point3d mean(frontier_t cells){
+octomap::point3d mean(const frontier_t& cells){
   octomap::point3d s(0.0,0.0,0.0);
   for (auto &c : cells)
   {

@@ -31,19 +31,24 @@ Types:
   returning a `path_info_t` breakdown (e.g. used as an edge-cost metric for TSP ordering).
 - `INVALID_DISTANCE` / `BIG_DISTANCE` — sentinel distance values for "no path" / "effectively
   infinite cost".
-- `NEIGHBOUR_OFFSETS` — the 26 integer `(dx,dy,dz)` offsets to a voxel's neighbours in a 3x3x3
-  block.
+- `NeighbourOffset` — POD struct `{int dx, dy, dz;}`, a single integer offset to a neighbouring
+  voxel.
+- `NEIGHBOUR_OFFSETS` — `const std::array<NeighbourOffset, 26>` of the offsets to a voxel's
+  neighbours in a 3x3x3 block, excluding itself.
 
 Functions:
 - `getColor(int i)` — returns a color from a small fixed palette, cycling every 15 indices.
-- `getNeighbourKey` / `getNeighboursKeys` — octomap key(s) of a voxel's neighbour(s).
+- `getNeighbourKey(key, const NeighbourOffset&)` / `getNeighboursKeys` — octomap key(s) of a
+  voxel's neighbour(s); `getNeighbourKey` takes its offset by const reference (avoids a per-call
+  copy — it is called millions of times during a zone flood-fill).
 - `sampleSpherePoints(int n)` — n quasi-uniform points on the unit sphere (Fibonacci sphere);
   currently unused.
 - `getConrners(AABB a)` — the 8 corner points of an AABB.
 - `aabbFromCenter` / `aabbSmartFromCenter` — build an AABB from a center point and side lengths
   (the latter additionally clamps to a floor level; currently unused).
-- `localZoneFromPosition` — AABB centered on a position, sized `(width, width, height)`, clamped
-  to a flight zone.
+- `localZoneFromPosition(octomap::point3d, ...)` / `localZoneFromPosition(geometry_msgs::Point, ...)`
+  — AABB centered on a position, sized `(width, width, height)`, clamped to a flight zone; the
+  `geometry_msgs::Point` overload delegates to the `octomap::point3d` one via `pointToOctomap`.
 - `intersect(AABB, point3d)` / `intersect(AABB, AABB)` — point-in-box / box-overlap tests.
 - `isSmallerEq` / `isBiggerEq` — component-wise vector comparisons.
 - `makeUnion` / `makeIntersection` / `isSubset` / `volume` — AABB set operations and volume.

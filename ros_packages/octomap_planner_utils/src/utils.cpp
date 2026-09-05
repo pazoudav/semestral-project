@@ -35,11 +35,11 @@ color_t getColor(int i){
   return COLORS[i%15];
 }
 
-octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, std::vector<int> neighbour_offset){
+octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, const NeighbourOffset& neighbour_offset){
   octomap::OcTreeKey new_key;
-  new_key.k[0] = key.k[0] + neighbour_offset[0];
-  new_key.k[1] = key.k[1] + neighbour_offset[1];
-  new_key.k[2] = key.k[2] + neighbour_offset[2];
+  new_key.k[0] = key.k[0] + neighbour_offset.dx;
+  new_key.k[1] = key.k[1] + neighbour_offset.dy;
+  new_key.k[2] = key.k[2] + neighbour_offset.dz;
   return new_key;
 }
 
@@ -114,11 +114,15 @@ AABB aabbFromCenter(octomap::point3d c, double x, double y,double z){
   return b;
 }
 
+AABB localZoneFromPosition(octomap::point3d position, AABB flight_zone, double width, double height)
+{
+  AABB local_zone = aabbFromCenter(position, width, width, height);
+  return makeIntersection(local_zone, flight_zone);
+}
+
 AABB localZoneFromPosition(geometry_msgs::Point position, AABB flight_zone, double width, double height)
 {
-  octomap::point3d coord(position.x, position.y, position.z);
-  AABB local_zone = aabbFromCenter(coord, width, width, height);
-  return makeIntersection(local_zone, flight_zone);
+  return localZoneFromPosition(pointToOctomap(position), flight_zone, width, height);
 }
 
 octomap::point3d pointToOctomap(const geometry_msgs::Point& p)
@@ -215,6 +219,52 @@ octomap::point3d getSampleFromAABB(AABB a)
   return octomap::point3d(getRand(a.min.x(), a.max.x()),
                           getRand(a.min.y(), a.max.y()),
                           getRand(a.min.z(), a.max.z()));
+}
+
+namespace
+{
+  // descends from node towards key, creating missing children along the way, and returns the node reached at target_depth
+  // (or at the tree's max depth if target_depth is 0); ported from mrs_octomap_server's touchNodeRecurs
+  octomap::OcTreeNode* touchNodeRecurs(octomap::OcTree& octree, octomap::OcTreeNode* node, const octomap::OcTreeKey& key,
+                                        unsigned int depth, unsigned int target_depth)
+  {
+    if (depth < octree.getTreeDepth() && (target_depth == 0 || depth < target_depth))
+    {
+      unsigned int pos = octomap::computeChildIdx(key, int(octree.getTreeDepth() - depth - 1));
+      if (!octree.nodeChildExists(node, pos))
+      {
+        octree.createNodeChild(node, pos);
+      }
+      return touchNodeRecurs(octree, octree.getNodeChild(node, pos), key, depth + 1, target_depth);
+    }
+    else
+    {
+      return node;
+    }
+    
+  }
+
+  octomap::OcTreeNode* touchNode(octomap::OcTree& octree, const octomap::OcTreeKey& key, unsigned int target_depth = 0)
+  {
+    return touchNodeRecurs(octree, octree.getRoot(), key, 0, target_depth);
+  }
+}
+
+void mergeInto(const octomap::OcTree& from, octomap::OcTree& to)
+{
+
+  if (!to.getRoot())
+  {
+    octomap::OcTreeKey root_key = to.coordToKey(0, 0, 0, to.getTreeDepth());
+    to.setNodeValue(root_key, octomap::logodds(0.0));
+  }
+
+  for (auto it = from.begin_leafs(), end = from.end_leafs(); it != end; ++it)
+  {
+    octomap::OcTreeKey    key  = it.getKey();
+    octomap::OcTreeNode*  node = touchNode(to, key, it.getDepth());
+    node->setValue(it->getValue());
+  }
 }
 
 bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree)

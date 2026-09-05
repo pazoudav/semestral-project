@@ -6,7 +6,7 @@ attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 # you can modify these
 pre_window: export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x500
-startup_window: explorer
+startup_window: nodelets
 windows:
   - roscore:
       layout: tiled
@@ -61,9 +61,9 @@ windows:
       layout: tiled
       panes:
         # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
-        - waitForHw; roslaunch frontier_detection detector.launch
         - waitForHw; roslaunch tsp_solver tsp_solver.launch
         - waitForHw; roslaunch prm_solver prm_solver.launch
+        - waitForHw; roslaunch frontier_detection detector.launch
   - skeleton:
       layout: tiled
       panes:

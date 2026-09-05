@@ -13,11 +13,11 @@ FIS::FIS(){
 // builds a FIS from a set of frontier cells: computes their centroid and bounding box, assigns the given id, starts with no viewpoints
 FIS::FIS(frontier_t cells, unsigned long id){
   id_ = id;
-  cells_ = cells;
   center_ = mean(cells);
   octomap::point3d min = getMinBound(cells);
   octomap::point3d max = getMaxBound(cells);
   bbx_ = {.min=min, .max=max};
+  cells_ = std::move(cells);
   sample_cnt_ = 20;
   viewpoints_ = std::vector<viewpoint_t>(0);
   valid_ = true;

@@ -204,6 +204,14 @@ bool FrontierManager::canBeProcessed(long closed_idx, const std::vector<bool>& c
   return (closed_idx >= 0 && closed_idx < closed.size() && !closed[closed_idx]);
 }
 
+// true if key lies within [min_key_, max_key_], i.e. within the currently active zone_
+bool FrontierManager::keyInZone(const octomap::OcTreeKey& key)
+{
+  return key[0] >= min_key_[0] && key[0] <= max_key_[0]
+      && key[1] >= min_key_[1] && key[1] <= max_key_[1]
+      && key[2] >= min_key_[2] && key[2] <= max_key_[2];
+}
+
 // sets zone for frontier search
 void FrontierManager::setZone(octomap_planner_utils::AABB zone)
 {
@@ -215,6 +223,8 @@ void FrontierManager::setZone(octomap_planner_utils::AABB zone)
   dy_ = max_key_[1] - min_key_[1] + 1;
   dz_ = max_key_[2] - min_key_[2] + 1;
   global_closed_ = std::vector<bool>(dx_*dy_*dz_, false);
+  frontier_stamp_ = std::vector<uint32_t>(dx_*dy_*dz_, 0);
+  current_frontier_epoch_ = 0;
   return;
 }
 
@@ -232,10 +242,9 @@ int FrontierManager::viewpointCoverage(octomap::point3d viewpoint_pos, const fro
       continue;
     }
     bool isVisible = true;
-    octomap::KeyRay key_ray;
-    tree_->computeRayKeys(viewpoint_pos, cell, key_ray);
+    tree_->computeRayKeys(viewpoint_pos, cell, ray_scratch_);
 
-    for (octomap::KeyRay::iterator it1 = key_ray.begin(), end = key_ray.end(); it1 != end; ++it1)
+    for (octomap::KeyRay::iterator it1 = ray_scratch_.begin(), end = ray_scratch_.end(); it1 != end; ++it1)
     {
       auto node = tree_->search(*it1, tree_->getTreeDepth());
       if (node && tree_->isNodeOccupied(node)){
@@ -269,7 +278,8 @@ void FrontierManager::makeViewpoints(std::shared_ptr<FIS> fis)
     }
 
     // viewpoint must have free space around
-    if (octomap_planner_utils::isFreeSpace(viewpoint_pos, free_space_diameter_, tree_))
+    // isFreeSpace takes a shared_ptr; tree_ is non-owning, so wrap it with a no-op deleter rather than transferring ownership
+    if (octomap_planner_utils::isFreeSpace(viewpoint_pos, free_space_diameter_, std::shared_ptr<octomap::OcTree>(tree_, [](octomap::OcTree*){})))
     {
       int coverage = viewpointCoverage(viewpoint_pos, fis->cells_);
       if (coverage >= min_coverage_)
@@ -286,119 +296,187 @@ void FrontierManager::makeViewpoints(std::shared_ptr<FIS> fis)
 
 }
 
-// removes old frontiers, serches for new ones and ads them, also creates viewpoints
-// classical BFS search, checks if cell was alredy explored or is a part of another forntier
-// updates only frontiers in zone that is visible by lidar and that contiants removed fromtiers
-void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree, octomap_planner_utils::AABB zone, octomap::OcTreeKey start_key)
+// BFS from start_key over free/unknown space within zone_; whenever an unknown cell adjacent to free space is found,
+// runs a nested BFS to extract the full frontier cluster it belongs to
+std::vector<frontier_t> FrontierManager::frontierSearch(octomap::OcTreeKey start_key)
 {
+  std::queue<octomap::OcTreeKey> qu;
+  qu.push(start_key);
 
-    ROS_INFO("Processing frontiers");
-    tree_ = tree;
-    setZone(zone);
+  std::vector<frontier_t> new_frontiers(0);
 
-    removeFrontiers();
+  while(qu.size() > 0)
+  {
 
-    octomap::point3d start_pos = tree_->keyToCoord(start_key);
-    std::queue<octomap::OcTreeKey> qu;
-    qu.push(start_key);
+    octomap::OcTreeKey current_key = qu.front();
+    qu.pop();
 
-    std::vector<frontier_t> new_frontiers(0);
-
-    while(qu.size() > 0)
+    for(auto &neighbour_offset : octomap_planner_utils::NEIGHBOUR_OFFSETS)
     {
+      octomap::OcTreeKey n_key = octomap_planner_utils::getNeighbourKey(current_key, neighbour_offset);
 
-      octomap::OcTreeKey current_key = qu.front();
-      qu.pop();
-
-      for(auto &neighbour_offset : octomap_planner_utils::NEIGHBOUR_OFFSETS)
+      if (!keyInZone(n_key))
       {
-        octomap::OcTreeKey n_key = octomap_planner_utils::getNeighbourKey(current_key, neighbour_offset);
-        octomap::point3d n_pos = tree_->keyToCoord(n_key);
+        continue;
+      }
+      long closed_idx = keyToClosedIdx(n_key);
 
-        if (!octomap_planner_utils::intersect(zone_, n_pos))
-        {
-          continue;
-        }
-        long closed_idx = keyToClosedIdx(n_key);
+      if (!canBeProcessed(closed_idx, global_closed_))
+      {
+        continue;
+      }
 
-        if (!canBeProcessed(closed_idx, global_closed_))
-        {
-          continue;
-        }
+      global_closed_[closed_idx] = true;
 
-        global_closed_[closed_idx] = true;
+      octomap::OcTreeNode* n_node = tree_->search(n_key, tree_->getTreeDepth());
 
-        octomap::OcTreeNode* n_node = tree_->search(n_key, tree_->getTreeDepth());
+      // if cell is unknown and neighbors free cell, do second BFS to extract a frontier
+      if (!n_node)
+      {
+          // found frontier cell;
+          // stamp-based closed-set for this frontier's own BFS: avoids reallocating/zeroing a zone-sized
+          // vector<bool> per frontier cluster (there can be many per frontierSearch() call)
+          current_frontier_epoch_++;
+          auto frontierCanBeProcessed = [this](long idx) {
+            return idx >= 0 && idx < (long)frontier_stamp_.size() && frontier_stamp_[idx] != current_frontier_epoch_;
+          };
+          frontier_t frontier_cells(0);
+          std::queue<octomap::OcTreeKey> frontier_qu;
+          frontier_qu.push(n_key);
+          // ---------------------- traversing frontier ---------------------//
+          while(frontier_qu.size()>0)
+          {
+            octomap::OcTreeKey current_fr_key = frontier_qu.front();
+            frontier_qu.pop();
 
-        // if cell is unknown and neighbors free cell, do second BFS to extract a frontier
-        if (!n_node)
-        {
-            // found frontier cell;
-            std::vector<bool> frontier_closed(dx_*dy_*dz_, false);
-            frontier_t frontier_cells(0);
-            std::queue<octomap::OcTreeKey> frontier_qu;
-            frontier_qu.push(n_key);
-            // ---------------------- traversing frontier ---------------------//
-            while(frontier_qu.size()>0)
+            closed_idx = keyToClosedIdx(current_fr_key);
+
+            if (!frontierCanBeProcessed(closed_idx))
             {
-              octomap::OcTreeKey current_fr_key = frontier_qu.front();
-              frontier_qu.pop();
-
-              closed_idx = keyToClosedIdx(current_fr_key);
-
-              if (!canBeProcessed(closed_idx, frontier_closed))
+              continue;
+            }
+            frontier_stamp_[closed_idx] = current_frontier_epoch_;
+            global_closed_[closed_idx] = true;
+            bool is_frontier_cell = false;
+            std::vector<octomap::OcTreeKey> unk_neighbors(0);
+            int d_neighbor_idx = -1;
+            for(auto &neighbour_offset : octomap_planner_utils::NEIGHBOUR_OFFSETS)
+            {
+              d_neighbor_idx++;
+              octomap::OcTreeKey fn_key = octomap_planner_utils::getNeighbourKey(current_fr_key, neighbour_offset);
+              if (!keyInZone(fn_key))
               {
                 continue;
               }
-              frontier_closed[closed_idx] = true;
-              global_closed_[closed_idx] = true;
-              bool is_frontier_cell = false;
-              std::vector<octomap::OcTreeKey> unk_neighbors(0);
-              int d_neighbor_idx = -1;
-              for(auto &neighbour_offset : octomap_planner_utils::NEIGHBOUR_OFFSETS)
+              closed_idx = keyToClosedIdx(fn_key);
+              octomap::OcTreeNode* fn_node = tree_->search(fn_key, tree_->getTreeDepth());
+              if (!fn_node)
               {
-                d_neighbor_idx++;
-                octomap::OcTreeKey fn_key = octomap_planner_utils::getNeighbourKey(current_fr_key, neighbour_offset);
-                octomap::point3d fn_pos = tree_->keyToCoord(fn_key);
-                if (!octomap_planner_utils::intersect(zone_, fn_pos))
+                if (frontierCanBeProcessed(closed_idx) && canBeProcessed(closed_idx, global_closed_))
                 {
-                  continue;
-                }
-                closed_idx = keyToClosedIdx(fn_key);
-                octomap::OcTreeNode* fn_node = tree_->search(fn_key, tree_->getTreeDepth());
-                if (!fn_node)
-                {
-                  if (canBeProcessed(closed_idx, frontier_closed) && canBeProcessed(closed_idx, global_closed_))
-                  {
-                    unk_neighbors.push_back(fn_key);
-                  }
-                }
-                else if (!tree_->isNodeOccupied(fn_node) && d_neighbor_idx < 6 && !is_frontier_cell) // diorect neighbor cell is free, and current cell wasnt added yet
-                {
-                  is_frontier_cell = true;
-                  frontier_cells.push_back(tree_->keyToCoord(current_fr_key));
+                  unk_neighbors.push_back(fn_key);
                 }
               }
-              if (is_frontier_cell)
+              else if (!tree_->isNodeOccupied(fn_node) && d_neighbor_idx < 6 && !is_frontier_cell) // diorect neighbor cell is free, and current cell wasnt added yet
               {
-                for (auto &cell : unk_neighbors)
-                {
-                  frontier_qu.push(cell);
-                }
+                is_frontier_cell = true;
+                frontier_cells.push_back(tree_->keyToCoord(current_fr_key));
               }
             }
-            if (frontier_cells.size() >= min_frontier_size_){
-              new_frontiers.push_back(frontier_cells);
+            if (is_frontier_cell)
+            {
+              for (auto &cell : unk_neighbors)
+              {
+                frontier_qu.push(cell);
+              }
             }
-        }
-        else if (! tree_->isNodeOccupied(n_node))
-        {
-          qu.push(n_key);
-        }
-
+          }
+          if (frontier_cells.size() >= min_frontier_size_){
+            new_frontiers.push_back(frontier_cells);
+          }
       }
+      else if (! tree_->isNodeOccupied(n_node))
+      {
+        qu.push(n_key);
+      }
+
+    }
+  }
+
+  return new_frontiers;
+}
+
+
+// (re)builds viewpoints for every valid frontier in zone_ that has none yet, re-checks existing viewpoints' coverage,
+// drops frontiers left with no viewpoints, and updates viewable_frontier_cnt_
+void FrontierManager::setViewpoints()
+{
+  viewable_frontier_cnt_ = 0;
+
+  for (auto& fis : fis_c_)
+  {
+    // ROS_ERROR("id %u is %s with %zu viewpoints and size %zu", fis->id_, fis->valid_  ? "valid" : "invalid", fis->viewpoints_.size(), fis->cellCnt());
+    if (!fis->valid_) {
+      continue;
+    };
+    int viewpoint_cnt = fis->viewpoints_.size();
+
+    if (octomap_planner_utils::intersect(fis->bbx_, zone_)){
+      if (viewpoint_cnt == 0)
+      {
+        makeViewpoints(fis);
+      }
+      // for (int vidx = fis->viewpoints_.size()-1; vidx >= 0; vidx--)
+      // {
+      //   int new_coverage = viewpointCoverage(fis->viewpoints_[vidx].position, fis->cells_);
+      //   if (new_coverage < min_coverage_)
+      //   {
+      //     fis->viewpoints_.erase(fis->viewpoints_.begin() + vidx);
+      //   }
+      //   else
+      //   {
+      //     fis->viewpoints_[vidx].coverage = new_coverage;
+      //   }
+      // }
+      // std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
     }
 
+    if (fis->viewpoints_.size() > 0){
+      // added_frontiers_.push_back(fis->viewpoints_[0].position);
+    }
+    else{
+      fis->valid_ = false;
+      continue;
+    }
+
+    viewable_frontier_cnt_ += fis->viewpoints_.size() == 0 ? 0 : 1;
+  }
+}
+
+// removes old frontiers, serches for new ones and ads them, also creates viewpoints
+// classical BFS search, checks if cell was alredy explored or is a part of another forntier
+// updates only frontiers in zone that is visible by lidar and that contiants removed fromtiers
+void FrontierManager::processNewMap(octomap::OcTree* tree, octomap_planner_utils::AABB zone, octomap::OcTreeKey start_key)
+{
+
+    ROS_INFO("Processing frontiers");
+
+    ros::WallTime t_start = ros::WallTime::now();
+    tree_ = tree;
+    setZone(zone);
+
+    ROS_INFO(" - setZone    %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
+
+    removeFrontiers();
+
+    ROS_INFO(" - remove     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
+
+    std::vector<frontier_t> new_frontiers = frontierSearch(start_key);
+
+    ROS_INFO(" - search     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
 
     int tmp = fis_c_.size();
     added_frontiers_ = std::vector<octomap::point3d>(0);
@@ -406,48 +484,17 @@ void FrontierManager::processNewMap(const std::shared_ptr<octomap::OcTree>& tree
     {
       addFrontier(frontier);
     }
-    viewable_frontier_cnt_ = 0;
 
-    for (auto& fis : fis_c_)
-    {
-      // ROS_ERROR("id %u is %s with %zu viewpoints and size %zu", fis->id_, fis->valid_  ? "valid" : "invalid", fis->viewpoints_.size(), fis->cellCnt());
-      if (!fis->valid_) {
-        continue;
-      };
-      int viewpoint_cnt = fis->viewpoints_.size();
+    ROS_INFO(" - add        %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
 
-      if (octomap_planner_utils::intersect(fis->bbx_, zone_)){
-        if (viewpoint_cnt == 0)
-        {
-          makeViewpoints(fis);
-        }
-        for (int vidx = fis->viewpoints_.size()-1; vidx >= 0; vidx--)
-        {
-          int new_coverage = viewpointCoverage(fis->viewpoints_[vidx].position, fis->cells_);
-          if (new_coverage < min_coverage_)
-          {
-            fis->viewpoints_.erase(fis->viewpoints_.begin() + vidx);
-          }
-          else
-          {
-            fis->viewpoints_[vidx].coverage = new_coverage;
-          }
-        }
-        std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
-      }
+    setViewpoints();
 
-      if (fis->viewpoints_.size() > 0){
-        // added_frontiers_.push_back(fis->viewpoints_[0].position);
-      }
-      else{
-        fis->valid_ = false;
-        continue;
-      }
+    ROS_INFO(" - viewpoints %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    // t_start = ros::WallTime::now();
 
-      viewable_frontier_cnt_ += fis->viewpoints_.size() == 0 ? 0 : 1;
-    }
-
-    ROS_INFO("[FrontierDetection]: final frontier count: %zu/%zu/%zu (total/inv/add)", fis_c_.size(), invalidated_frontiers_.size(), added_frontiers_.size());
+    // ROS_INFO("[FrontierDetection]: final frontier count: %zu/%zu/%zu (total/inv/add)", fis_c_.size(), invalidated_frontiers_.size(), added_frontiers_.size());
 }
+
 
 }

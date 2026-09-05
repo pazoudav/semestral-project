@@ -2,6 +2,7 @@
 #define OCTOMAP_PLANNER_UTILS_UTILS_H
 
 
+#include <array>
 #include <vector>
 #include <octomap/octomap.h>
 #include <algorithm>
@@ -57,8 +58,16 @@ typedef std::function<path_info_t (octomap::point3d, octomap::point3d)> distance
 const double INVALID_DISTANCE = -1.0;
 const double BIG_DISTANCE = 1000000.0;
 
+// a (dx,dy,dz) integer offset to a neighbouring voxel
+struct NeighbourOffset
+{
+  int dx;
+  int dy;
+  int dz;
+};
+
 // the 26 integer (dx,dy,dz) offsets to a voxel's neighbours in the surrounding 3x3x3 block, excluding itself
-const std::vector<std::vector<int>> NEIGHBOUR_OFFSETS = {
+const std::array<NeighbourOffset, 26> NEIGHBOUR_OFFSETS = {{
     {0, 0, -1}, {0, 0, 1}, {0, 1, 0},
     {0, -1, 0}, {1, 0, 0}, {-1, 0, 0},
     {-1, -1, -1}, {-1, -1, 0}, {-1, -1, 1},
@@ -69,14 +78,14 @@ const std::vector<std::vector<int>> NEIGHBOUR_OFFSETS = {
     {1, -1, -1}, {1, -1, 0}, {1, -1, 1},
     {1, 0, -1}, {1, 0, 1},
     {1, 1, -1}, {1, 1, 0}, {1, 1, 1}
-};
+}};
 
 
 // returns a color from a small fixed palette, cycling every 15 indices (used e.g. for color-coding frontiers)
 color_t getColor(int i);
 
 // returns the key of the voxel offset from key by neighbour_offset (a (dx,dy,dz) integer offset)
-octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, std::vector<int> neighbour_offset);
+octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, const NeighbourOffset& neighbour_offset);
 // returns the keys of all 26 voxels adjacent to current_node_key (see NEIGHBOUR_OFFSETS)
 std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_node_key);
 
@@ -92,6 +101,8 @@ AABB aabbFromCenter(octomap::point3d c, double x, double y,double z);
 // like aabbFromCenter, but clamps the min z up to floor if it would otherwise go below it; currently unused
 AABB aabbSmartFromCenter(octomap::point3d c, double x, double y,double z, double floor=0.0);
 
+// AABB centered on position, sized (width, width, height), clamped to flight_zone
+AABB localZoneFromPosition(octomap::point3d position, AABB flight_zone, double width, double height);
 // AABB centered on position, sized (width, width, height), clamped to flight_zone
 AABB localZoneFromPosition(geometry_msgs::Point position, AABB flight_zone, double width, double height);
 
@@ -117,6 +128,10 @@ AABB makeIntersection(AABB a, AABB b);
 bool isSubset(AABB a, AABB b);
 // box volume (dx*dy*dz); meaningless/negative if min > max on any axis
 float volume(AABB a);
+
+// overlays every leaf of `from` onto `to` (creating intermediate nodes as needed), overwriting `to`'s value at each
+// corresponding voxel; used to merge a fresher/local octomap into a persistent one. `from` and `to` must share the same resolution.
+void mergeInto(const octomap::OcTree& from, octomap::OcTree& to);
 
 // true if every voxel inside zone is known and free in tree (unknown or occupied voxels make it false)
 bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree);

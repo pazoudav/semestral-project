@@ -38,7 +38,7 @@
 
       <!-- topics in -->
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
-      <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
+      <remap from="~octomap_local_in" to="octomap_server/octomap_local_binary" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
 
       <!-- topics out -->
