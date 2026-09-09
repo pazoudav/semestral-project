@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(prm_solver)
+project(path_planning)
 
 add_definitions(-DOCTOMAP_NODEBUGOUT)
 add_definitions(-O3)
@@ -9,9 +9,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # disables anoying googletest warning
 set(CATKIN_ENABLE_TESTING FALSE)
-
-# disables anoying PCL warnings
-set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS 1 CACHE INTERNAL "No dev warnings")
 
 set(CATKIN_DEPENDENCIES
   cmake_modules
@@ -32,7 +29,7 @@ set(CATKIN_DEPENDENCIES
 
 
 set(LIBRARIES
-  MrsPrmSolver
+  MrsPathPlanning
 )
 
 find_package(catkin REQUIRED
@@ -41,11 +38,6 @@ find_package(catkin REQUIRED
 
 find_package(octomap REQUIRED)
 add_definitions(-DOCTOMAP_NODEBUGOUT)
-
-# include Eigen3
-find_package(Eigen3 REQUIRED)
-set(Eigen_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
-set(Eigen_LIBRARIES ${Eigen_LIBRARIES})
 
 add_service_files(FILES
   FindSimplifiedPath.srv
@@ -68,20 +60,19 @@ include_directories(SYSTEM
   include
   ${catkin_INCLUDE_DIRS}
   ${OCTOMAP_INCLUDE_DIRS}
-  ${EIGEN3_INCLUDE_DIRS}
 )
 
-add_library(MrsPrmSolver
-  src/prm.cpp
-  src/prm_nodelet.cpp
+add_library(MrsPathPlanning
+  src/path_planning_nodelet.cpp
+  src/path_planner.cpp
 )
 
-add_dependencies(MrsPrmSolver
+add_dependencies(MrsPathPlanning
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
 )
 
-target_link_libraries(MrsPrmSolver
+target_link_libraries(MrsPathPlanning
   ${catkin_LIBRARIES}
   ${OCTOMAP_LIBRARIES}
 )

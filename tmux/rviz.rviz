@@ -343,12 +343,12 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: false
-          Marker Topic: /uav1/prm_solver/visualize_prm
-          Name: visualize_prm
+          Marker Topic: /uav1/path_planning/visualize_roadmap
+          Name: visualize_roadmap
           Namespaces:
-            visualize_prm_lines: true
-            visualize_prm_points: true
-            visualize_prm_triangles: true
+            visualize_roadmap_lines: true
+            visualize_roadmap_points: true
+            visualize_roadmap_triangles: true
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray

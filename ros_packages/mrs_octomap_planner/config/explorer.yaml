@@ -1,7 +1,7 @@
 planning:
   replanning_distance: 0.6
   skip_path_point_distance: 0.4
-  flight_free_distance: 0.8
+  flight_free_distance: 0.6
   replan_request_cooldown: 0.5 # [s] min interval between replan_request_out service calls, to avoid overwhelming the service
   stuck_distance: 0.1 # [m] min movement over stuck_duration to not be considered stuck
   stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE

@@ -33,7 +33,7 @@
   <depend>frontier_detection</depend>
   <depend>octomap_planner_utils</depend>
   <depend>tsp_solver</depend>
-  <depend>prm_solver</depend>
+  <depend>path_planning</depend>
 
   <export>
     <nodelet plugin="${prefix}/nodelets.xml" />

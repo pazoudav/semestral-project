@@ -34,7 +34,7 @@ set(CATKIN_DEPENDENCIES
   frontier_detection
   octomap_planner_utils
   tsp_solver
-  prm_solver
+  path_planning
   )
 
 set(LIBRARIES

@@ -24,9 +24,9 @@
 
   <group ns="$(arg UAV_NAME)">
 
-    <node pkg="nodelet" type="nodelet" name="prm_solver" args="$(arg nodelet) prm_solver/PRM $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
+    <node pkg="nodelet" type="nodelet" name="path_planning" args="$(arg nodelet) path_planning/PathPlanning $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
-      <rosparam file="$(find prm_solver)/config/prm_solver.yaml" command="load" />
+      <rosparam file="$(find path_planning)/config/path_planning.yaml" command="load" />
 
       <param name="uav_name" value="$(arg UAV_NAME)" />
 
@@ -36,7 +36,7 @@
 
       <!-- topics in -->
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
-      <remap from="~octomap_in" to="octomap_server/octomap_global_full" />
+      <remap from="~octomap_in" to="octomap_server/octomap_local_binary" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
       <remap from="~frontiers_in" to="frontier_detector/frontiers" />
 

@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <package format="2">
 
-  <name>prm_solver</name>
+  <name>path_planning</name>
   <version>1.0.0</version>
-  <description>Probabilistic roadmap building and path search over the octomap</description>
+  <description>Path planning over a persistent octomap fused from local map updates (skeleton)</description>
 
   <maintainer email="pazoudav@fel.cvut.cz">David Pazout</maintainer>
 

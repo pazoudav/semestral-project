@@ -1,0 +1,5 @@
+<library path="lib/libMrsPathPlanning">
+  <class name="path_planning/PathPlanning" type="path_planning::PathPlanningNodelet" base_class_type="nodelet::Nodelet">
+    <description>MRS path planning nodelet (skeleton) over a locally-fused global octomap</description>
+  </class>
+</library>

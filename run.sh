@@ -15,7 +15,7 @@ clear
 # catkin build prm_solver
 # catkin build mrs_octomap_planner
 # catkin build mrs_octomap_mapping_planning
-catkin build skeleton_estimator mrs_octomap_planner mrs_octomap_mapping_planning frontier_detection prm_solver octomap_planner_utils
+catkin build skeleton_estimator mrs_octomap_planner mrs_octomap_mapping_planning frontier_detection  octomap_planner_utils path_planning #prm_solver
 
 export WORLD_NAME="${@: -1}"
 WB=$(/home/david/user_ros_workspace/data/dist/worldbounds/worldbounds $WORLD_NAME)

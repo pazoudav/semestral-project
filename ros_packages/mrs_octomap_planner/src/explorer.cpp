@@ -39,7 +39,7 @@
 #include <frontier_detection/FrontierArray.h>
 #include <tsp_solver/SetStart.h>
 #include <tsp_solver/Solve.h>
-#include <prm_solver/FindSimplifiedPath.h>
+#include <path_planning/FindSimplifiedPath.h>
 
 typedef enum
 {
@@ -131,7 +131,7 @@ namespace mrs_octomap_planner
     mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv> sc_trajectory_reference_;
     mrs_lib::ServiceClientHandler<tsp_solver::SetStart>             sc_tsp_set_start_;
     mrs_lib::ServiceClientHandler<tsp_solver::Solve>                sc_tsp_solve_;
-    mrs_lib::ServiceClientHandler<prm_solver::FindSimplifiedPath>   sc_prm_find_simplified_path_;
+    mrs_lib::ServiceClientHandler<path_planning::FindSimplifiedPath> sc_path_planning_find_simplified_path_;
     mrs_lib::ServiceClientHandler<std_srvs::Trigger>                sc_replan_request_;
     ros::Time                                                       last_replan_request_time_ = ros::Time(0);
 
@@ -248,7 +248,7 @@ namespace mrs_octomap_planner
     sc_trajectory_reference_      = mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv>(nh_, "trajectory_reference_out");
     sc_tsp_set_start_             = mrs_lib::ServiceClientHandler<tsp_solver::SetStart>(nh_, "set_start_out");
     sc_tsp_solve_                 = mrs_lib::ServiceClientHandler<tsp_solver::Solve>(nh_, "solve_out");
-    sc_prm_find_simplified_path_  = mrs_lib::ServiceClientHandler<prm_solver::FindSimplifiedPath>(nh_, "find_simplified_path_out");
+    sc_path_planning_find_simplified_path_ = mrs_lib::ServiceClientHandler<path_planning::FindSimplifiedPath>(nh_, "find_simplified_path_out");
     sc_replan_request_            = mrs_lib::ServiceClientHandler<std_srvs::Trigger>(nh_, "replan_request_out");
 
     ss_replan_request_ = nh_.advertiseService("replan_request_in", &Explorer::callbackReplanRequest, this);
@@ -434,7 +434,7 @@ bool Explorer::pathAndTrajectory()
 
 
   // signals that new frontiers are available, so a TSP re-solve is warranted
-  // (PRM roadmap updates from these frontiers now happen internally in the prm_solver nodelet)
+  // (roadmap updates from these frontiers, if any, happen internally in the path_planning nodelet)
   void Explorer::callbackFrontiers(const frontier_detection::FrontierArray::ConstPtr msg)
   {
     if (!is_initialized_) {
@@ -447,7 +447,7 @@ bool Explorer::pathAndTrajectory()
 
 
 // (re)plans the flight path: checks the current MPC prediction for imminent collisions (triggers an emergency brake to last_free_point_ if so), otherwise, once close enough to goal_/next_goal_,
-// calls tsp_solver's ~set_start_out/~solve_out services for a fresh global viewpoint tour and then prm_solver's ~find_simplified_path_out per tour sub-segment to build path_; returns true iff path_ was updated
+// calls tsp_solver's ~set_start_out/~solve_out services for a fresh global viewpoint tour and then path_planning's ~find_simplified_path_out per tour sub-segment to build path_; returns true iff path_ was updated
 bool Explorer::makePath()
 {
   // ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: starting path (re)plannig");
@@ -637,7 +637,7 @@ void Explorer::visualizeGlobalPath(const std::vector<octomap::point3d>& glob_pat
   }
 }
 
-// finds a path to first reachable viewpoint on global path, calling prm_solver's ~find_simplified_path_out per tour sub-segment;
+// finds a path to first reachable viewpoint on global path, calling path_planning's ~find_simplified_path_out per tour sub-segment;
 // adds only the path to that first viewpoint to make into a trajectory later
 bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::vector<octomap::point3d>& glob_path, const octomath::Vector3& velocity,
                                std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path)
@@ -658,7 +658,7 @@ bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::ve
     path_distance += path_distance + sub_global_path.back().distance(glob_path[i]);
     sub_global_path.push_back(glob_path[i]);
 
-    prm_solver::FindSimplifiedPath find_path_srv;
+    path_planning::FindSimplifiedPath find_path_srv;
     find_path_srv.request.start.x = sub_global_path[j].x();
     find_path_srv.request.start.y = sub_global_path[j].y();
     find_path_srv.request.start.z = sub_global_path[j].z();
@@ -669,7 +669,7 @@ bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::ve
     find_path_srv.request.velocity.x = seg_velocity.x();
     find_path_srv.request.velocity.y = seg_velocity.y();
     find_path_srv.request.velocity.z = seg_velocity.z();
-    if (!sc_prm_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success)
+    if (!sc_path_planning_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success)
     {
       ROS_ERROR("[MrsExplorer]: temp path not found");
       return false;
@@ -864,14 +864,7 @@ void Explorer::requestReplan()
 // deserializes an octomap_msgs/Octomap (binary or full, per msg->binary) into an OcTree_t; returns nullopt if the message decodes to an empty/null tree
 std::optional<OcTreeSharedPtr_t> Explorer::msgToMap(const octomap_msgs::OctomapConstPtr octomap)
 {
-  octomap::AbstractOcTree* abstract_tree;
-
-  if (octomap->binary) {
-    abstract_tree = octomap_msgs::binaryMsgToMap(*octomap);
-  }
-  else {
-    abstract_tree = octomap_msgs::fullMsgToMap(*octomap);
-  }
+  octomap::AbstractOcTree* abstract_tree = octomap_msgs::msgToMap(*octomap);
 
   if (!abstract_tree) {
     ROS_WARN("[MrsExplorer]: Octomap message is empty! can not convert to OcTree");

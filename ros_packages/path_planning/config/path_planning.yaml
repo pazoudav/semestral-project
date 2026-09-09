@@ -1,0 +1,21 @@
+zone:
+  global:
+    floor:  -0.1       # keep numerically in sync with mrs_octomap_planner/config/explorer.yaml zone.global.floor
+  local:
+    width:  11.0         # keep numerically in sync with .../explorer.yaml zone.local.width
+    height: 9.0          # keep numerically in sync with .../explorer.yaml zone.local.height
+
+timer_rates:
+  update: 5.0
+
+roadmap:
+  inflate_radius:         0.0
+  target_density:         0.1
+  min_spacing:            0.8
+  connect_radius:         1.2
+  min_obstacle_clearance: 0.8
+
+viz:
+  scale:
+    points: 0.1
+    lines:  0.01
