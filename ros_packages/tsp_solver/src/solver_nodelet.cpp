@@ -34,7 +34,9 @@ namespace tsp_solver
 
       bool        is_initialized_ = false;
 
-      int _max_duration_;
+      int    _max_duration_;
+      double _lkh_time_limit_;
+      int    _lkh_runs_;
 
       std::mutex               mutex_tsp_;
       std::unique_ptr<TSPsolver> tsp_solver_;
@@ -66,13 +68,15 @@ namespace tsp_solver
     mrs_lib::ParamLoader param_loader(nh_, "TSPsolver");
 
     param_loader.loadParam("tsp/max_duration", _max_duration_);
+    param_loader.loadParam("tsp/lkh_time_limit", _lkh_time_limit_);
+    param_loader.loadParam("tsp/lkh_runs", _lkh_runs_);
 
     if (!param_loader.loadedSuccessfully()) {
       ROS_ERROR("[Solver]: Could not load all parameters");
       ros::shutdown();
     }
 
-    tsp_solver_ = std::make_unique<TSPsolver>(_max_duration_);
+    tsp_solver_ = std::make_unique<TSPsolver>(_max_duration_, nh_, _lkh_time_limit_, _lkh_runs_);
 
     mrs_lib::SubscribeHandlerOptions shopts;
     shopts.nh                 = nh_;
@@ -146,11 +150,16 @@ namespace tsp_solver
 
     octomath::Vector3 velocity(req.velocity.x, req.velocity.y, req.velocity.z);
 
+    ros::WallTime t_checkpoint = ros::WallTime::now();
+    ros::WallTime t_total      = ros::WallTime::now();
+
     std::vector<octomap::point3d> path;
     {
       std::scoped_lock lock(mutex_tsp_);
       path = tsp_solver_->solve(velocity);
     }
+    ROS_INFO("[Solver]: callbackSolve solve      %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    t_checkpoint = ros::WallTime::now();
 
     for (auto &p : path)
     {
@@ -160,12 +169,15 @@ namespace tsp_solver
       point.z = p.z();
       res.path.push_back(point);
     }
+    ROS_INFO("[Solver]: callbackSolve build_resp %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 
     res.success = res.path.size() > 1;
     if (!res.success) {
       res.message = "TSP tour not found";
     }
 
+    ROS_INFO("[Solver]: callbackSolve total      %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
+    ROS_INFO("[Solver]: ---------------------------");
     return true;
   }
 

@@ -1,2 +1,4 @@
 tsp:
   max_duration: 10000000
+  lkh_time_limit: 0.5
+  lkh_runs: 3

@@ -27,6 +27,7 @@
   <depend>pcl_conversions</depend>
   <depend>frontier_detection</depend>
   <depend>octomap_planner_utils</depend>
+  <depend>path_planning</depend>
 
   <export>
     <nodelet plugin="${prefix}/nodelets.xml" />

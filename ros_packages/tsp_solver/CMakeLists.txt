@@ -30,6 +30,7 @@ set(CATKIN_DEPENDENCIES
   pcl_conversions
   frontier_detection
   octomap_planner_utils
+  path_planning
 )
 
 

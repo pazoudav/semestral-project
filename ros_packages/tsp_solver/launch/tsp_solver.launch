@@ -32,6 +32,9 @@
       <remap from="~set_start_in" to="~set_start" />
       <remap from="~solve_in" to="~solve" />
 
+      <!-- services out -->
+      <remap from="~find_simplified_path_out" to="path_planning/find_simplified_path" />
+
     </node>
 
   </group>

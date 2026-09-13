@@ -4,12 +4,13 @@
 
 `tsp_solver` orders exploration viewpoints (frontiers, plus a start node for the UAV's
 current position) into a single global visiting tour. It runs as a standalone nodelet
-decoupled from `mrs_octomap_planner`'s `Explorer` and from `prm_solver`: it keeps its own
-distance graph in sync with the live frontier set using a fixed Euclidean distance metric
-(independent of the PRM roadmap), and solves the resulting (asymmetric) TSP by shelling out
-to the bundled LKH solver binary, with a greedy-construction + randomized 3-opt local search
-as a fallback. `Explorer::makePath()` drives it purely through two blocking services to obtain
-an ordered tour, which it then hands to `prm_solver` in chunks to get a flyable path.
+decoupled from `mrs_octomap_planner`'s `Explorer` and from `path_planning`: it keeps its own
+distance graph in sync with the live frontier set by querying `path_planning`'s
+`~find_simplified_path_in` service for real (roadmap, raycast-simplified) travel distances
+between nodes, and solves the resulting (asymmetric) TSP by shelling out to the bundled LKH
+solver binary, with a greedy-construction + randomized 3-opt local search as a fallback.
+`Explorer::makePath()` drives it purely through two blocking services to obtain an ordered
+tour, which it then hands to `path_planning` in chunks to get a flyable path.
 
 ## ROS interface
 
@@ -20,7 +21,7 @@ an ordered tour, which it then hands to `prm_solver` in chunks to get a flyable 
 | `~frontiers_in` | `frontier_detection/frontiers` | `frontier_detection/FrontierArray` | Keeps the internal distance graph (`TSPsolver::dist_map_`) in sync via `syncFrontiers()`. |
 | `~candidate_viewpoints_in` | `skeleton_estimator/candidate_viewpoints` | `sensor_msgs/PointCloud2` | Intended to feed `TSPsolver::setKDtreeInput()` with skeleton-derived guiding viewpoints; the callback (`Solver::callbackCandidateViewpoints`) currently returns immediately after the initialization check, so this path is effectively a no-op at runtime. |
 
-### Services
+### Services advertised (server)
 
 | Service (private name) | Remap (launch) | Type | Purpose |
 |---|---|---|---|
@@ -30,17 +31,24 @@ an ordered tour, which it then hands to `prm_solver` in chunks to get a flyable 
 Both services are called back-to-back by `Explorer::makePath()` (in `mrs_octomap_planner`, not
 part of this package) to obtain a fresh tour.
 
+### Services called (client)
+
+| Service (private name) | Remap (launch) | Type | Purpose |
+|---|---|---|---|
+| `~find_simplified_path_out` | `path_planning/find_simplified_path` | `path_planning/FindSimplifiedPath` (`geometry_msgs/Point start`, `geometry_msgs/Point[] goals`, `geometry_msgs/Vector3 velocity`, `bool use_raycast` → `path_planning/Path[] paths`, `bool[] success`) | `findPathDistances()` (called from `syncFrontiers()`/`setStart()`) — batched query to `path_planning` for real, raycast-simplified roadmap path lengths from one start node to a set of goal nodes. |
+
 ## Important functions/classes
 
 - **`tsp_solver::Solver`** (`solver_nodelet.cpp`) — the nodelet: owns a `TSPsolver` instance, wires up the topic subscriptions and the two services, and translates between ROS messages and `TSPsolver`'s C++ API.
 - **`tsp_solver::TSPsolver`** (`tsp_solver.hpp`/`tsp_solver.cpp`) — the actual solver logic, independent of ROS nodelet machinery.
-- **`syncFrontiers`** — reconciles the internal distance graph with an incoming `FrontierArray`: removes nodes/distances for frontiers no longer present, adds a node (with pairwise Euclidean distances to all existing nodes) for each new frontier's first viewpoint.
-- **`setStart`** — (re)inserts the start/current-position node and recomputes its distances to every other node; marks unreachable neighbors (`BIG_DISTANCE`) as inaccessible.
+- **`syncFrontiers`** — reconciles the internal distance graph with an incoming `FrontierArray`: removes nodes/distances for frontiers no longer present, then for each new frontier's first viewpoint adds a node with distances to all existing nodes obtained from a single batched `findPathDistances` call.
+- **`setStart`** — (re)inserts the start/current-position node and recomputes its distances to every other node via one batched `findPathDistances` call; marks unreachable neighbors (`BIG_DISTANCE`) as inaccessible.
+- **`findPathDistances`** — issues one `~find_simplified_path_out` call from a given start position to a batch of goal positions (a single shared Dijkstra search over all goals, per `path_planning`'s own batching design); returns each goal's path length as the sum of the returned simplified path's segment lengths, or `BIG_DISTANCE` for a goal `path_planning` couldn't reach or if the service call itself failed.
 - **`setKDtreeInput`** — loads a point cloud of guiding viewpoints into a `pcl::KdTreeFLANN` used to bias the cost matrix toward them (only exercised if the candidate-viewpoints callback is re-enabled).
 - **`constructDistanceMatrix`** — flattens `dist_map_` into the dense `cost_matrix_`/`viewpoint_positions_`/`isAccesible_` used by both solve paths, adding a start-heading penalty and (if set) KD-tree viewpoint weighting to the start row.
 - **`solve(octomath::Vector3 velocity)`** — main entry point used by the nodelet: builds the distance matrix and calls `LKHSolve()`, returning the ordered viewpoint positions.
 - **LKH invocation (`LKHSolve` / `GlobalParWrite` / `GlobalProblemWrite` / `GlobalResultsRead`)** — writes an LKH `.par` control file and an explicit-weight ATSP problem file (`cost_matrix.txt`) under `LKH/`, shells out via `std::system()` to the bundled `LKH/LKH` binary, then parses `solution.txt`'s `TOUR_SECTION` back into a 0-based node index tour. Paths are resolved relative to `ros::package::getPath("tsp_solver")`.
-- **Greedy/random fallback (`solve(cost_matrix, reuse_solution)` / `generateGreedySolution` / `generateRadnSolution` / `computeCost` / `computeDistance`)** — an alternative, non-LKH solver: nearest-neighbor construction followed by randomized 3-opt segment reversals/reinsertions for a configured time budget, keeping any improving move. Not currently called from `solve(velocity)` (which always goes through LKH), but retained as a self-contained alternative.
+- **Greedy/random fallback (`solve(cost_matrix, reuse_solution)` / `generateGreedySolution` / `generateRadnSolution` / `computeCost`)** — an alternative, non-LKH solver: nearest-neighbor construction followed by randomized 3-opt segment reversals/reinsertions for a configured time budget, keeping any improving move. Not currently called from `solve(velocity)` (which always goes through LKH), but retained as a self-contained alternative.
 
 ## File structure
 
@@ -69,6 +77,6 @@ tsp_solver/
 
 From `package.xml`/`CMakeLists.txt`:
 - **catkin build deps**: `cmake_modules`, `mrs_lib`, `nodelet`, `roscpp`, `rospy`, `octomap_msgs`, `octomap_ros`, `message_generation`/`message_runtime`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, `pcl_ros`, `pcl_conversions`.
-- **In-workspace package deps**: `frontier_detection` (for `frontier_detection/FrontierArray` and `Frontier`/`Viewpoint` message types consumed in `syncFrontiers`) and `octomap_planner_utils` (for `distance_funcion_t`, `path_info_t`, `INVALID_DISTANCE`/`BIG_DISTANCE`, and `getRand` used by the fallback solver).
+- **In-workspace package deps**: `frontier_detection` (for `frontier_detection/FrontierArray` and `Frontier`/`Viewpoint` message types consumed in `syncFrontiers`), `octomap_planner_utils` (for `distance_funcion_t`, `path_info_t`, `INVALID_DISTANCE`/`BIG_DISTANCE`, and `getRand` used by the fallback solver), and `path_planning` (for the `path_planning/FindSimplifiedPath` service type called by `findPathDistances`).
 - **External libraries**: OctoMap (`octomap`/`octomath` point types), Eigen3 (cost matrix), PCL (`pcl::KdTreeFLANN`, point cloud conversions).
-- **Runtime (not a linked library)**: the bundled `LKH/LKH` binary, invoked via `std::system()` at solve time — this is a hard runtime dependency of the primary (non-fallback) solve path, resolved via `ros::package::getPath("tsp_solver")`.
+- **Runtime (not a linked library)**: the bundled `LKH/LKH` binary, invoked via `std::system()` at solve time — this is a hard runtime dependency of the primary (non-fallback) solve path, resolved via `ros::package::getPath("tsp_solver")`. `syncFrontiers`/`setStart` additionally require a live `path_planning` nodelet serving `~find_simplified_path` — if unavailable, `findPathDistances` reports `BIG_DISTANCE` for every requested goal.
