@@ -97,10 +97,13 @@ namespace path_planning
       std::optional<NodeId> findNearestNode(const octomap::point3d& point) const;
 
       // greedy line-of-sight shortcutting: collapses `path` into as few straight segments as
-      // possible by repeatedly extending each anchor to the farthest later waypoint that keeps
-      // min_obstacle_clearance the whole way there (see segmentHasClearance), then continuing from
-      // there. Occupancy queries are cached for the duration of one call (see hasClearanceCached).
-      std::vector<octomap::point3d> simplifyPath(const octomap::OcTree& octree, const std::vector<octomap::point3d>& path) const;
+      // possible by repeatedly extending each anchor to the farthest later waypoint still
+      // reachable from it, then continuing from there. By default "reachable" means
+      // min_obstacle_clearance the whole way there (see segmentHasClearance), with occupancy
+      // queries cached for the duration of one call (see hasClearanceCached). If use_raycast is
+      // true, a cheaper zero-clearance line-of-sight check (see collisionFree) is used instead --
+      // faster but allows the simplified path to graze obstacles more closely.
+      std::vector<octomap::point3d> simplifyPath(const octomap::OcTree& octree, const std::vector<octomap::point3d>& path, bool use_raycast = false) const;
 
       const std::unordered_map<NodeId, RoadmapNode>& nodes() const
       {

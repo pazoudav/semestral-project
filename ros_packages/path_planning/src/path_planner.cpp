@@ -126,7 +126,7 @@ namespace path_planning
     return spatial_index_.nearest(point);
   }
 
-  std::vector<octomap::point3d> PathPlanner::simplifyPath(const octomap::OcTree& octree, const std::vector<octomap::point3d>& path) const
+  std::vector<octomap::point3d> PathPlanner::simplifyPath(const octomap::OcTree& octree, const std::vector<octomap::point3d>& path, bool use_raycast) const
   {
     if (path.size() < 3) {
       return path;
@@ -139,10 +139,14 @@ namespace path_planning
 
     std::size_t anchor = 0;
     while (anchor < path.size() - 1) {
-      // farthest waypoint still reachable from `anchor` with clearance; scanning from the end means the first hit is the farthest
+      // farthest waypoint still reachable from `anchor`; scanning from the end means the first hit is the farthest
       std::size_t farthest = anchor + 1;
       for (std::size_t j = path.size() - 1; j > anchor + 1; --j) {
-        if (segmentHasClearance(octree, path[anchor], path[j], params_.min_obstacle_clearance, clearance_cache)) {
+        // use_raycast trades the clearance margin for a single zero-width ray cast (collisionFree) -- cheaper, but lets the
+        // simplified segment graze obstacles as closely as collisionFree/updateRoadmap's edges already do elsewhere
+        const bool reachable = use_raycast ? collisionFree(octree, path[anchor], path[j])
+                                            : segmentHasClearance(octree, path[anchor], path[j], params_.min_obstacle_clearance, clearance_cache);
+        if (reachable) {
           farthest = j;
           break;
         }

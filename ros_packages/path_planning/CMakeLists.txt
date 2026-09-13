@@ -39,6 +39,10 @@ find_package(catkin REQUIRED
 find_package(octomap REQUIRED)
 add_definitions(-DOCTOMAP_NODEBUGOUT)
 
+add_message_files(FILES
+  Path.msg
+)
+
 add_service_files(FILES
   FindSimplifiedPath.srv
 )

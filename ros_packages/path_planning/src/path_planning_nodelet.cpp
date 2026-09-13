@@ -15,6 +15,7 @@
 #include <octomap_msgs/conversions.h>
 
 #include <path_planning/FindSimplifiedPath.h>
+#include <path_planning/Path.h>
 #include <path_planning/path_planner.hpp>
 #include <octomap_planner_utils/utils.hpp>
 #include <frontier_detection/FrontierArray.h>
@@ -343,14 +344,22 @@ namespace path_planning
   }
 
   // ~find_simplified_path_in service handler -- same request/response shape as prm_solver's
-  // find_simplified_path: snaps req.start/req.goal onto their nearest roadmap nodes (via
-  // PathPlanner::findNearestNode), runs PathPlanner::shortestPath between them, and shortcuts the
-  // resulting node-position path via PathPlanner::simplifyPath before returning it
+  // find_simplified_path, generalized to multiple goals: snaps req.start and every req.goals[i]
+  // onto their nearest roadmap nodes (via PathPlanner::findNearestNode), then runs a single
+  // PathPlanner::shortestPaths batch search from start to all of them (cheaper than one
+  // PathPlanner::shortestPath call per goal, since Dijkstra's relaxation is shared), and shortcuts
+  // each resulting node-position path via PathPlanner::simplifyPath before returning it.
+  // req.use_raycast selects PathPlanner::simplifyPath's cheaper zero-clearance raycast shortcutting
+  // instead of its default clearance-preserving one, applied uniformly to every returned path.
+  // res.paths/res.success are index-aligned with req.goals; a goal with no roadmap node nearby, or
+  // unreachable from start, gets success=false and an empty path at its index.
   bool PathPlanningNodelet::callbackFindSimplifiedPath(path_planning::FindSimplifiedPath::Request&  req,
                                                         path_planning::FindSimplifiedPath::Response& res)
   {
+    res.paths.resize(req.goals.size());
+    res.success.assign(req.goals.size(), false);
+
     if (!is_initialized_) {
-      res.success = false;
       return true;
     }
 
@@ -360,58 +369,72 @@ namespace path_planning
     ROS_INFO("[PathPlanningNodelet]: callbackFindSimplifiedPath recieved");
 
     const octomap::point3d start(req.start.x, req.start.y, req.start.z);
-    const octomap::point3d goal(req.goal.x, req.goal.y, req.goal.z);
 
     std::scoped_lock lock(mutex_octree_, mutex_roadmap_);
 
     const std::optional<NodeId> start_id = path_planner_->findNearestNode(start);
-    const std::optional<NodeId> goal_id  = path_planner_->findNearestNode(goal);
-
-    if (!start_id || !goal_id) {
+    if (!start_id) {
       ROS_WARN_THROTTLE(1.0, "[PathPlanningNodelet]: roadmap has no nodes to search from");
-      res.success = false;
       return true;
+    }
+
+    // per-goal nearest roadmap node, index-aligned with req.goals; several goals can share a
+    // nearest node, so shortestPaths is asked for the deduplicated set (it dedups internally) and
+    // results are looked back up per requested goal below
+    std::vector<std::optional<NodeId>> goal_ids;
+    goal_ids.reserve(req.goals.size());
+    std::vector<NodeId> unique_goal_ids;
+    for (const geometry_msgs::Point& g : req.goals) {
+      const std::optional<NodeId> goal_id = path_planner_->findNearestNode(octomap::point3d(g.x, g.y, g.z));
+      goal_ids.push_back(goal_id);
+      if (goal_id) {
+        unique_goal_ids.push_back(*goal_id);
+      }
     }
 
     ROS_INFO("[PathPlanningNodelet]: preprocess %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
     t_start = ros::WallTime::now();
 
-    const std::optional<PathResult> result = path_planner_->shortestPath(*start_id, *goal_id);
-    if (!result) {
-      ROS_WARN_THROTTLE(1.0, "[PathPlanningNodelet]: no path found between start and goal");
-      res.success = false;
-      return true;
-    }
+    const std::unordered_map<NodeId, PathResult> results = path_planner_->shortestPaths(*start_id, unique_goal_ids);
 
     ROS_INFO("[PathPlanningNodelet]: serach     %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
     t_start = ros::WallTime::now();
 
     const auto& nodes = path_planner_->nodes();
-    std::vector<octomap::point3d> raw_path;
-    raw_path.reserve(result->path.size());
-    for (const NodeId id : result->path) {
-      raw_path.push_back(nodes.at(id).position);
-    }
+    for (std::size_t i = 0; i < req.goals.size(); ++i) {
+      if (!goal_ids[i]) {
+        continue; // roadmap has no node near this goal
+      }
 
-    const std::vector<octomap::point3d> simplified_path = octree_ ? path_planner_->simplifyPath(*octree_, raw_path) : raw_path;
+      const auto result_it = results.find(*goal_ids[i]);
+      if (result_it == results.end()) {
+        continue; // unreachable from start
+      }
+
+      std::vector<octomap::point3d> raw_path;
+      raw_path.reserve(result_it->second.path.size());
+      for (const NodeId id : result_it->second.path) {
+        raw_path.push_back(nodes.at(id).position);
+      }
+
+      const std::vector<octomap::point3d> simplified_path = octree_ ? path_planner_->simplifyPath(*octree_, raw_path, req.use_raycast) : raw_path;
+
+      for (const octomap::point3d& p : simplified_path) {
+        geometry_msgs::Point point;
+        point.x = p.x();
+        point.y = p.y();
+        point.z = p.z();
+        res.paths[i].points.push_back(point);
+      }
+
+      res.success[i] = res.paths[i].points.size() > 1;
+    }
 
     ROS_INFO("[PathPlanningNodelet]: simplify   %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
-    // t_start = ros::WallTime::now();
-
-    for (const octomap::point3d& p : simplified_path) {
-      geometry_msgs::Point point;
-      point.x = p.x();
-      point.y = p.y();
-      point.z = p.z();
-      res.path.push_back(point);
-    }
-
-    res.success = res.path.size() > 1;
     // ROS_INFO("[PathPlanningNodelet]: callbackFindSimplifiedPath processed");
 
     ROS_INFO("[PathPlanningNodelet]: clbckFSP   %4.3fms,",  1000*(ros::WallTime::now() - t_start_g).toSec());
     ROS_INFO("[PathPlanningNodelet]: ===========================");
-    // t_start = ros::WallTime::now();
     return true;
   }
 

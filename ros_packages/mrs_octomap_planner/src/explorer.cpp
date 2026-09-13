@@ -662,20 +662,22 @@ bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::ve
     find_path_srv.request.start.x = sub_global_path[j].x();
     find_path_srv.request.start.y = sub_global_path[j].y();
     find_path_srv.request.start.z = sub_global_path[j].z();
-    find_path_srv.request.goal.x  = sub_global_path[j+1].x();
-    find_path_srv.request.goal.y  = sub_global_path[j+1].y();
-    find_path_srv.request.goal.z  = sub_global_path[j+1].z();
+    geometry_msgs::Point goal_point;
+    goal_point.x = sub_global_path[j+1].x();
+    goal_point.y = sub_global_path[j+1].y();
+    goal_point.z = sub_global_path[j+1].z();
+    find_path_srv.request.goals.push_back(goal_point);
     octomath::Vector3 seg_velocity = j == 0 ? velocity : velocity*0.0;
     find_path_srv.request.velocity.x = seg_velocity.x();
     find_path_srv.request.velocity.y = seg_velocity.y();
     find_path_srv.request.velocity.z = seg_velocity.z();
-    if (!sc_path_planning_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success)
+    if (!sc_path_planning_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success[0])
     {
       ROS_ERROR("[MrsExplorer]: temp path not found");
       return false;
     }
     std::vector<octomap::point3d> temp_path;
-    for (auto &p : find_path_srv.response.path)
+    for (auto &p : find_path_srv.response.paths[0].points)
     {
       temp_path.emplace_back(p.x, p.y, p.z);
     }
