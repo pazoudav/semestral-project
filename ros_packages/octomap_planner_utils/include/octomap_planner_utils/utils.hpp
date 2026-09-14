@@ -13,6 +13,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <random>
 
 #include <mrs_lib/subscribe_handler.h>
 #include <mrs_lib/transformer.h>
@@ -86,15 +87,13 @@ color_t getColor(int i);
 
 // returns the key of the voxel offset from key by neighbour_offset (a (dx,dy,dz) integer offset)
 octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, const NeighbourOffset& neighbour_offset);
-// returns the keys of all 26 voxels adjacent to current_node_key (see NEIGHBOUR_OFFSETS)
-std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_node_key);
 
 
 // generates n quasi-uniformly distributed points on the unit sphere (Fibonacci sphere method); currently unused
 std::vector<octomap::point3d> sampleSpherePoints(int n);
 
 // returns the 8 corner points of the AABB
-std::vector<octomap::point3d> getConrners(AABB a);
+std::array<octomap::point3d, 8> getConrners(AABB a);
 
 // builds an AABB centered at c with side lengths x, y, z
 AABB aabbFromCenter(octomap::point3d c, double x, double y,double z);
@@ -113,7 +112,7 @@ geometry_msgs::Point octomapToPoint(const octomap::point3d& p);
 
 // true if point p lies within (inclusive of) AABB bbx0
 bool intersect(AABB bbx0, octomap::point3d p);
-// true if the two AABBs overlap (tested via corner containment in both directions)
+// true if the two AABBs overlap (standard separating-axis test; also covers the "cross" case where neither box's corners lie inside the other)
 bool intersect(AABB bbx0, AABB bbx1);
 
 // component-wise a <= b
@@ -134,9 +133,9 @@ float volume(AABB a);
 void mergeInto(const octomap::OcTree& from, octomap::OcTree& to);
 
 // true if every voxel inside zone is known and free in tree (unknown or occupied voxels make it false)
-bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree);
+bool isFreeSpace(AABB zone, const octomap::OcTree& tree);
 // true if every voxel within diameter/2 of center (approx. a sphere) is known and free in tree
-bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr<octomap::OcTree>& tree);
+bool isFreeSpace(octomap::point3d center, double diameter, const octomap::OcTree& tree);
 
 // uniform random float in [0,1)
 float getRand();

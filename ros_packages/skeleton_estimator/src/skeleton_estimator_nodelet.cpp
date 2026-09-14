@@ -26,6 +26,7 @@
 #include <pcl/filters/passthrough.h>
 #include <pcl/common/transforms.h>
 
+#include <algorithm>
 #include <random>
 
 struct trans_cost_t
@@ -75,6 +76,7 @@ private:
   pcl::PointCloud<pcl::PointXYZ>::Ptr  source_viewpoint_candidates_;
   pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr skeleton_kdtree_;
   std::vector<trans_cost_t>            tranfomation_history_;
+  std::mt19937                         rng_{std::random_device{}()};
 
   mrs_lib::SubscribeHandler<visualization_msgs::Marker>      sh_source_skeleton_;
   mrs_lib::SubscribeHandler<visualization_msgs::Marker>      sh_target_skeleton_;
@@ -423,7 +425,7 @@ void SkeletonEstimator::loadSkeleton(const visualization_msgs::Marker::ConstPtr 
 
       for (int i=1; i<=div_cnt; i++)
       {
-        Eigen::Vector3f np = p1 + ((i/(div_cnt+1)) * dir);
+        Eigen::Vector3f np = p1 + ((static_cast<float>(i)/(div_cnt+1)) * dir);
         pointcloud->push_back(pcl::PointXYZ(np.x(), np.y(), np.z()));
       }
     }
@@ -442,7 +444,6 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
     const std::vector<std::vector<int>>& candidates,
     int iterations)
 {
-    std::mt19937 rng;
     std::uniform_int_distribution<> dist(0, cs->size() - 1);
     Eigen::Matrix4f bestT = Eigen::Matrix4f::Identity();
     Eigen::Matrix4f bestT_inv = Eigen::Matrix4f::Identity();
@@ -457,14 +458,17 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
 
     for (int it = 0; it < iterations; ++it) {
         std::vector<Eigen::Vector3f> src, tgt;
+        std::vector<int>             used_idx;
 
         for (int k = 0; k < 3; ++k) {
-            int i = dist(rng);
+            int i = dist(rng_);
             if (candidates[i].empty()) continue;
+            if (std::find(used_idx.begin(), used_idx.end(), i) != used_idx.end()) continue;
 
-            int j = candidates[i][rng() % candidates[i].size()];
+            int j = candidates[i][rng_() % candidates[i].size()];
             Eigen::Vector3f ps(cs->points[i].x, cs->points[i].y, cs->points[i].z);
             Eigen::Vector3f pt(ct->points[j].x, ct->points[j].y, ct->points[j].z);
+            used_idx.push_back(i);
             src.push_back(ps);
             tgt.push_back(pt);
         }

@@ -18,7 +18,6 @@
 #include <tsp_solver/Solve.h>
 
 #include <memory>
-#include <mutex>
 
 
 namespace tsp_solver
@@ -38,7 +37,6 @@ namespace tsp_solver
       double _lkh_time_limit_;
       int    _lkh_runs_;
 
-      std::mutex               mutex_tsp_;
       std::unique_ptr<TSPsolver> tsp_solver_;
 
       mrs_lib::SubscribeHandler<frontier_detection::FrontierArray> sh_frontiers_;
@@ -104,7 +102,6 @@ namespace tsp_solver
       return;
     }
 
-    std::scoped_lock lock(mutex_tsp_);
     tsp_solver_->syncFrontiers(msg);
   }
 
@@ -119,7 +116,6 @@ namespace tsp_solver
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
     pcl::fromROSMsg(*msg, *cloud);
 
-    std::scoped_lock lock(mutex_tsp_);
     tsp_solver_->setKDtreeInput(cloud);
   }
 
@@ -132,7 +128,6 @@ namespace tsp_solver
       return true;
     }
 
-    std::scoped_lock lock(mutex_tsp_);
     tsp_solver_->setStart(octomap::point3d(req.position.x, req.position.y, req.position.z));
     res.success = true;
     return true;
@@ -153,11 +148,7 @@ namespace tsp_solver
     ros::WallTime t_checkpoint = ros::WallTime::now();
     ros::WallTime t_total      = ros::WallTime::now();
 
-    std::vector<octomap::point3d> path;
-    {
-      std::scoped_lock lock(mutex_tsp_);
-      path = tsp_solver_->solve(velocity);
-    }
+    std::vector<octomap::point3d> path = tsp_solver_->solve(velocity);
     ROS_INFO("[Solver]: callbackSolve solve      %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
     t_checkpoint = ros::WallTime::now();
 

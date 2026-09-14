@@ -278,8 +278,7 @@ void FrontierManager::makeViewpoints(std::shared_ptr<FIS> fis)
     }
 
     // viewpoint must have free space around
-    // isFreeSpace takes a shared_ptr; tree_ is non-owning, so wrap it with a no-op deleter rather than transferring ownership
-    if (octomap_planner_utils::isFreeSpace(viewpoint_pos, free_space_diameter_, std::shared_ptr<octomap::OcTree>(tree_, [](octomap::OcTree*){})))
+    if (octomap_planner_utils::isFreeSpace(viewpoint_pos, free_space_diameter_, *tree_))
     {
       int coverage = viewpointCoverage(viewpoint_pos, fis->cells_);
       if (coverage >= min_coverage_)

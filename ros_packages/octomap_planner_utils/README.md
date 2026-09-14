@@ -38,23 +38,32 @@ Types:
 
 Functions:
 - `getColor(int i)` — returns a color from a small fixed palette, cycling every 15 indices.
-- `getNeighbourKey(key, const NeighbourOffset&)` / `getNeighboursKeys` — octomap key(s) of a
-  voxel's neighbour(s); `getNeighbourKey` takes its offset by const reference (avoids a per-call
-  copy — it is called millions of times during a zone flood-fill).
+- `getNeighbourKey(key, const NeighbourOffset&)` — octomap key of a single voxel's neighbour,
+  given a `(dx,dy,dz)` offset; takes its offset by const reference (avoids a per-call copy — it is
+  called millions of times during a zone flood-fill).
 - `sampleSpherePoints(int n)` — n quasi-uniform points on the unit sphere (Fibonacci sphere);
   currently unused.
-- `getConrners(AABB a)` — the 8 corner points of an AABB.
+- `getConrners(AABB a)` — the 8 corner points of an AABB, returned as a `std::array` (no heap
+  allocation).
 - `aabbFromCenter` / `aabbSmartFromCenter` — build an AABB from a center point and side lengths
   (the latter additionally clamps to a floor level; currently unused).
 - `localZoneFromPosition(octomap::point3d, ...)` / `localZoneFromPosition(geometry_msgs::Point, ...)`
   — AABB centered on a position, sized `(width, width, height)`, clamped to a flight zone; the
   `geometry_msgs::Point` overload delegates to the `octomap::point3d` one via `pointToOctomap`.
-- `intersect(AABB, point3d)` / `intersect(AABB, AABB)` — point-in-box / box-overlap tests.
+- `intersect(AABB, point3d)` / `intersect(AABB, AABB)` — point-in-box / box-overlap tests; the
+  box-overlap test is an allocation-free separating-axis test built on `isSmallerEq`/`isBiggerEq`
+  (also correctly handles the "cross" case where neither box's corners lie inside the other).
 - `isSmallerEq` / `isBiggerEq` — component-wise vector comparisons.
 - `makeUnion` / `makeIntersection` / `isSubset` / `volume` — AABB set operations and volume.
-- `isFreeSpace(AABB, tree)` / `isFreeSpace(center, diameter, tree)` — check that a region (box or
-  approximate sphere) is entirely known-and-free in an `octomap::OcTree`.
-- `getRand()` / `getRand(a,b)` / `getSampleFromAABB` — uniform random sampling helpers.
+- `isFreeSpace(AABB, const octomap::OcTree&)` / `isFreeSpace(center, diameter, const octomap::OcTree&)`
+  — check that a region (box or approximate sphere) is entirely known-and-free in an
+  `octomap::OcTree`, both taking the tree by const reference. The box variant walks only the leaves
+  overlapping the zone via octomap's native `begin_leafs_bbx`/`end_leafs_bbx` iterator and compares
+  the known-free leaves' clipped volume against the zone's volume, rather than descending the tree
+  per fine voxel. The sphere variant still does a per-voxel spherical scan (unchanged) since it sits
+  on `mrs_octomap_planner`'s 20Hz collision-check hot path.
+- `getRand()` / `getRand(a,b)` / `getSampleFromAABB` — uniform random sampling helpers; `getRand()`
+  draws from a thread-local, `std::random_device`-seeded `std::mt19937` (rather than libc `rand()`).
 - `getPosition(...)` — reads the UAV's current commanded position (from `mrs_msgs::TrackerCommand`
   via a caller-owned `SubscribeHandler`) and transforms it into the octree frame; assumes the
   octree mutex is already held by the caller when reading `octree_frame`.

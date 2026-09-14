@@ -527,12 +527,12 @@ bool Explorer::checkImminentCollision(const octomap::point3d& start_coord, const
     std::scoped_lock lock(mutex_octree_);
     tree = std::make_shared<OcTree_t>(*octree_);
   }
-  if (octomap_planner_utils::isFreeSpace(start_coord, _free_space_dia_, tree)){
+  if (octomap_planner_utils::isFreeSpace(start_coord, _free_space_dia_, *tree)){
     last_free_point_ = start_coord;
   }
   for (auto & point : prediction.position)
   {
-    isInFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
+    isInFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, *tree);
     if (!isInFreeSpace)
     {
       ROS_ERROR("[MrsExplorer]: EMERGENCY REPLAN");
@@ -651,11 +651,17 @@ bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::ve
 
   while(sub_global_path.size() <= 3 || path_distance < 4.0)
   {
-    while (sub_global_path.back().distance(glob_path[i]) < _skip_path_point_distance_)
+    while (i + 1 < static_cast<int>(glob_path.size()) && sub_global_path.back().distance(glob_path[i]) < _skip_path_point_distance_)
     {
       i++;
     }
-    path_distance += path_distance + sub_global_path.back().distance(glob_path[i]);
+    const double dist_to_next = sub_global_path.back().distance(glob_path[i]);
+    if (dist_to_next < 1e-6 && i == static_cast<int>(glob_path.size()) - 1)
+    {
+      // reached the end of the tour, no further distinct point available
+      break;
+    }
+    path_distance += dist_to_next;
     sub_global_path.push_back(glob_path[i]);
 
     path_planning::FindSimplifiedPath find_path_srv;
@@ -724,11 +730,11 @@ bool Explorer::checkTrajectoryCollision(const octomap::point3d& start_coord, con
   std::shared_ptr<OcTree_t> tree;
   {
     std::scoped_lock lock(mutex_octree_);
-    tree = std::make_shared<OcTree_t>(*octree_);
+    tree = octree_;
   }
   for (auto & point : prediction.position)
   {
-    isFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, tree);
+    isFreeSpace = octomap_planner_utils::isFreeSpace(octomap::point3d(point.x,point.y,point.z), _flight_free_distance_, *tree);
     if (!isFreeSpace)
     {
       // goal_ = start_coord;

@@ -342,6 +342,14 @@ Visualization Manager:
           Queue Size: 100
           Value: true
         - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /uav1/frontier_detector/frontier_cells_vis_array
+          Name: frontier_cells_vis_array
+          Namespaces:
+            frontier_cells: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
           Enabled: false
           Marker Topic: /uav1/path_planning/visualize_roadmap
           Name: visualize_roadmap

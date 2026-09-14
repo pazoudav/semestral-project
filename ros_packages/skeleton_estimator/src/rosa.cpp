@@ -35,6 +35,8 @@ bool Rosa::run(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int est_num)
     return false;
   }
 
+  std::srand((unsigned)std::time(nullptr));
+
   P_          = Pcloud();
   pcd_size_   = 0;
   norm_scale_ = 1.0;
@@ -907,7 +909,6 @@ Eigen::Matrix3d Rosa::createOrthonormalFrame(Eigen::Vector3d v) const
 {
   v                     = v / v.norm();
   const double TH_ZERO  = 1e-10;
-  std::srand((unsigned)std::time(nullptr));
 
   Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
   M(0, 0) = v(0);

@@ -4,10 +4,6 @@
 namespace octomap_planner_utils
 {
 
-// precomputed (currently unused) point set from sampleSpherePoints
-auto SPHERE_POINTS = sampleSpherePoints(128);
-
-
 // used for plotting frontires
 color_t COLORS[] = {{.r=1.0, .g=0.0, .b=0.0},
                     {.r=0.0, .g=1.0, .b=0.0},
@@ -43,18 +39,6 @@ octomap::OcTreeKey getNeighbourKey(octomap::OcTreeKey key, const NeighbourOffset
   return new_key;
 }
 
-std::vector<octomap::OcTreeKey> getNeighboursKeys(octomap::OcTreeKey current_node_key) {
-
-  //Add current node to the closed set
-  std::vector<octomap::OcTreeKey> res(0);
-
-  for(auto &neighbour_offset : NEIGHBOUR_OFFSETS){
-      octomap::OcTreeKey neighbour_key = getNeighbourKey(current_node_key, neighbour_offset);
-      res.push_back(neighbour_key);
-  }
-  return res;
-}
-
 std::vector<octomap::point3d> sampleSpherePoints(int n)
 {
   std::vector<octomap::point3d> points(0);
@@ -87,14 +71,14 @@ bool isBiggerEq(const octomath::Vector3& a, const octomath::Vector3& b)
   return a.x() >= b.x() && a.y() >= b.y() && a.z() >= b.z();
 }
 
-std::vector<octomap::point3d> getConrners(AABB a){
-  std::vector<octomap::point3d> l;
+std::array<octomap::point3d, 8> getConrners(AABB a){
+  std::array<octomap::point3d, 8> l;
 
+  int i = 0;
   for (auto dx : {a.max.x(), a.min.x()}){
     for (auto dy : {a.max.y(), a.min.y()}){
       for (auto dz : {a.max.z(), a.min.z()}){
-        octomap::point3d corner(dx, dy, dz);
-        l.push_back(corner);
+        l[i++] = octomap::point3d(dx, dy, dz);
       }
     }
   }
@@ -172,20 +156,8 @@ bool isSubset(AABB a, AABB b)
 }
 
 bool intersect(AABB bbx0, AABB bbx1){
-
-  for (auto corner : getConrners(bbx1)){
-    if (intersect(bbx0, corner))
-    {
-      return true;
-    }
-  }
-  for (auto corner : getConrners(bbx0)){
-    if (intersect(bbx1, corner))
-    {
-      return true;
-    }
-  }
-  return false;
+  // standard separating-axis AABB overlap test: the boxes overlap iff they overlap on every axis
+  return isSmallerEq(bbx0.min, bbx1.max) && isBiggerEq(bbx0.max, bbx1.min);
 }
 
 bool intersect(AABB bbx0, octomap::point3d p){
@@ -200,7 +172,11 @@ bool intersect(AABB bbx0, octomap::point3d p){
 
 float getRand()
 {
-  return static_cast <float> (rand()) / static_cast <float> (RAND_MAX);
+  // thread_local, seeded-per-thread engine: avoids libc rand()'s shared global state (unseeded => deterministic
+  // across runs, and unsafe to call concurrently from path_planning/frontier_detection/tsp_solver's own threads)
+  thread_local std::mt19937 generator(std::random_device{}());
+  thread_local std::uniform_real_distribution<float> distribution(0.0f, 1.0f);
+  return distribution(generator);
 }
 
 float getRand(float a, float b)
@@ -267,67 +243,61 @@ void mergeInto(const octomap::OcTree& from, octomap::OcTree& to)
   }
 }
 
-bool isFreeSpace(AABB zone, const std::shared_ptr<octomap::OcTree>& tree)
+bool isFreeSpace(AABB zone, const octomap::OcTree& tree)
 {
-  octomap::point3d idx_bound = (zone.max - zone.min)*(1.0/tree->getResolution());
-  for (int zi=0; zi<=(int)idx_bound.z(); zi++)
+  // walk only the leaves overlapping zone (native leaf_bbx_iterator) instead of descending the tree per fine voxel;
+  // a coarse free/occupied leaf covering many voxels is then visited once instead of once per voxel it contains.
+  // unknown space leaves no leaf behind, so "every voxel known and free" is checked by requiring the known leaves'
+  // volume (clipped to zone) to add up to the full zone volume.
+  const double zone_volume = static_cast<double>(volume(zone));
+  double       known_volume = 0.0;
+
+  for (auto it = tree.begin_leafs_bbx(zone.min, zone.max), end = tree.end_leafs_bbx(); it != end; ++it)
   {
-    float z = zone.min.z() + zi*tree->getResolution();
-    for (int yi=0; yi<=(int)idx_bound.y(); yi++)
+    if (tree.isNodeOccupied(*it))
     {
-      float y = zone.min.y() + yi*tree->getResolution();
-      for (int xi=0; xi<=(int)idx_bound.x(); xi++)
-      {
-        float x = zone.min.x() + xi*tree->getResolution();
-        octomap::OcTreeKey key;
-        bool inTree = tree->coordToKeyChecked(x,y,z, key);
-        if (!inTree)
-        {
-          return false;
-        }
-        auto node = tree->search(key, tree->getTreeDepth());
-        if (!node){
-          return false;
-        }
-        if (tree->isNodeOccupied(node)){
-          return false;
-        }
-      }
+      return false;
     }
+
+    const float half_size = static_cast<float>(it.getSize() / 2.0);
+    const octomap::point3d leaf_min = it.getCoordinate() - octomap::point3d(half_size, half_size, half_size);
+    const octomap::point3d leaf_max = it.getCoordinate() + octomap::point3d(half_size, half_size, half_size);
+    known_volume += static_cast<double>(volume(makeIntersection(AABB{.min=leaf_min, .max=leaf_max}, zone)));
   }
-  return true;
+
+  return known_volume >= zone_volume - 1e-6;
 }
 
-bool isFreeSpace(octomap::point3d center, double diameter, const std::shared_ptr<octomap::OcTree>& tree)
+bool isFreeSpace(octomap::point3d center, double diameter, const octomap::OcTree& tree)
 {
   double radius = diameter/2.0;
-  int idx_bound = (int)std::ceil(radius*(1.0/tree->getResolution()));
-  // octomap::point3d start = center + octomap::point3d(-radius, -radius, -radius);
+  double resolution = tree.getResolution();
+  int idx_bound = (int)std::ceil(radius*(1.0/resolution));
   for (int zi=-idx_bound; zi<=idx_bound; zi++)
   {
-    float dz =  zi*tree->getResolution();
+    float dz =  zi*resolution;
     for (int yi=-idx_bound; yi<=idx_bound; yi++)
     {
-      float dy = yi*tree->getResolution();
+      float dy = yi*resolution;
       for (int xi=-idx_bound; xi<=idx_bound; xi++)
       {
-        float dx = xi*tree->getResolution();
+        float dx = xi*resolution;
         octomap::point3d dv(dx,dy,dz);
         if (dv.norm() > 1.1*radius)
         {
           continue;
         }
         octomap::OcTreeKey key;
-        bool inTree = tree->coordToKeyChecked(center+dv, key);
+        bool inTree = tree.coordToKeyChecked(center+dv, key);
         if (!inTree)
         {
           return false;
         }
-        auto node = tree->search(key, tree->getTreeDepth());
+        auto node = tree.search(key, tree.getTreeDepth());
         if (!node){
           return false;
         }
-        if (tree->isNodeOccupied(node)){
+        if (tree.isNodeOccupied(node)){
           return false;
         }
       }
@@ -376,22 +346,40 @@ std::optional<mrs_msgs::MpcPredictionFullState> getFullStatePrediction(
 {
   const bool got_control_manager_diag = sh_control_manager_diag.hasMsg() && (ros::Time::now() - sh_control_manager_diag.lastMsgTime()).toSec() < 2.0;
   const bool got_tracker_cmd          = sh_tracker_cmd.hasMsg() && (ros::Time::now() - sh_tracker_cmd.lastMsgTime()).toSec() < 2.0;
-  mrs_msgs::MpcPredictionFullState prediction;
-  if (got_control_manager_diag && got_tracker_cmd)
-  {
-    prediction  = sh_tracker_cmd.getMsg()->full_state_prediction;
-    auto ret = transformer.getTransform(prediction.header.frame_id, octree_frame, prediction.header.stamp);
-
-    if (!ret) {
-      ROS_WARN_THROTTLE(1.0, "%s: could not transform position cmd to the map frame! can not check for potential collisions!", log_tag.c_str());
-      return {};
-    }
-  }
-  else
+  if (!got_control_manager_diag || !got_tracker_cmd)
   {
     ROS_WARN_THROTTLE(1.0, "%s: could not get controller prediction", log_tag.c_str());
     return {};
   }
+
+  mrs_msgs::MpcPredictionFullState prediction = sh_tracker_cmd.getMsg()->full_state_prediction;
+  auto ret = transformer.getTransform(prediction.header.frame_id, octree_frame, prediction.header.stamp);
+
+  if (!ret) {
+    ROS_WARN_THROTTLE(1.0, "%s: could not transform position cmd to the map frame! can not check for potential collisions!", log_tag.c_str());
+    return {};
+  }
+
+  const geometry_msgs::TransformStamped& tf = ret.value();
+  for (auto& p : prediction.position)
+  {
+    const auto transformed = transformer.transform(p, tf);
+    if (!transformed) {
+      ROS_WARN_THROTTLE(1.0, "%s: could not transform prediction position to the map frame! can not check for potential collisions!", log_tag.c_str());
+      return {};
+    }
+    p = transformed.value();
+  }
+  for (auto& v : prediction.velocity)
+  {
+    const auto transformed = transformer.transform(v, tf);
+    if (!transformed) {
+      ROS_WARN_THROTTLE(1.0, "%s: could not transform prediction velocity to the map frame! can not check for potential collisions!", log_tag.c_str());
+      return {};
+    }
+    v = transformed.value();
+  }
+  prediction.header.frame_id = octree_frame;
   return prediction;
 }
 

@@ -23,7 +23,7 @@ resolution: 0.2
 
 global_map:
 
-  size: 120 # [m]
+  size: 200 # [m]
 
   # should create a global map from the local map?
   enabled: true

@@ -14,11 +14,54 @@ mrs_uav_managers:
 
     # # altitude_estimator: "BARO"
 
+    # the rtk estimator's default max_flight_z is 100.0 [m], raised here to match the world's safety area max_z
+    rtk:
+      alt_rtk:
+        max_flight_z: 500.0 # [m]
+      lat_rtk:
+        max_flight_z: 500.0 # [m]
+      hdg_hw_api:
+        max_flight_z: 500.0 # [m]
+
+  constraint_manager:
+
+    default_constraints:
+      rtk: "medium"
+
+    medium:
+      vertical:
+        ascending:
+          acceleration: 2.0 # [m/s^2]
+        descending:
+          acceleration: 2.0 
+      horizontal:
+        speed: 2.0
+
+
+    # rtk's default_constraints is "slow", which is the profile actually in effect at runtime
+    # slow:
+    #   vertical:
+    #     ascending:
+    #       acceleration: 2.0 # [m/s^2]
+    #     descending:
+    #       acceleration: 2.0 # [m/s^2]
+
   uav_manager:
 
     takeoff:
       after_takeoff:
         controller: "MpcController"
+
+mrs_uav_controllers:
+  mpc_controller:
+    mpc:
+      mpc_parameters:
+        horizontal:
+          max_speed: 2.5        # was 2.0
+          max_acceleration: 2.5 # was 2.0
+        vertical:
+          max_speed: 2.5        # was 2.0
+          max_acceleration: 2.5 # was 2.0
 
 mrs_uav_trajectory_generation:
 

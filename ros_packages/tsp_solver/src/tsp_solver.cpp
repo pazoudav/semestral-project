@@ -1,6 +1,7 @@
 
 #include "tsp_solver/tsp_solver.hpp"
 #include <set>
+#include <cstdio>
 
 namespace tsp_solver
 {
@@ -12,11 +13,11 @@ namespace tsp_solver
   duration_ = ros::Duration(0, max_duration);
   GlobalTimeLimit_ = lkh_time_limit;
   GlobalRuns_ = lkh_runs;
-  cost_matrix_ = Eigen::MatrixXd(32,32);
-  viewpoint_positions_ = {octomap::point3d(0.0,0.0,0.0)};
-  isAccesible_ = {true};
+  ensureCapacity(32);
   sc_find_simplified_path_ = mrs_lib::ServiceClientHandler<path_planning::FindSimplifiedPath>(nh, "find_simplified_path_out");
   tree_ = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>();
+  // LKH .par contents are fixed for the process lifetime; write once here instead of on every solve().
+  GlobalParWrite();
 }
 
 TSPsolver::~TSPsolver()
@@ -24,21 +25,100 @@ TSPsolver::~TSPsolver()
 }
 
 
+// Grows distances_ (conservativeResize preserves the existing top-left block) to at least `needed` x `needed`.
+void TSPsolver::ensureCapacity(int needed)
+{
+  int cap = static_cast<int>(distances_.rows());
+  if (needed <= cap)
+    return;
+  int new_cap = std::max(needed, cap > 0 ? cap * 2 : 32);
+  distances_.conservativeResize(new_cap, new_cap);
+}
+
+int TSPsolver::addNode(unsigned long id, const octomap::point3d &position, bool isAccesible)
+{
+  int index = static_cast<int>(nodes_.size());
+  ensureCapacity(index + 1);
+  nodes_.push_back(planner_t{id, position, isAccesible});
+  id_to_index_[id] = index;
+  return index;
+}
+
+void TSPsolver::removeNode(unsigned long id)
+{
+  auto it = id_to_index_.find(id);
+  if (it == id_to_index_.end())
+    return;
+
+  int index = it->second;
+  int last  = static_cast<int>(nodes_.size()) - 1;
+
+  if (index != last)
+  {
+    nodes_[index] = nodes_[last];
+    id_to_index_[nodes_[index].id] = index;
+    distances_.row(index).head(last) = distances_.row(last).head(last);
+    distances_.col(index).head(last) = distances_.row(last).head(last).transpose();
+  }
+
+  nodes_.pop_back();
+  id_to_index_.erase(id);
+}
+
+void TSPsolver::setDistance(int i, int j, float value)
+{
+  distances_(i, j) = value;
+  distances_(j, i) = value;
+}
+
+// One-time setup: makes room for START_ID at index 0 by shifting every already-present node (and the
+// matrix rows/cols they occupy) up by one. Only ever runs on the first setStart() call, since START_ID
+// is never removed afterwards (syncFrontiers explicitly excludes it from pruning).
+void TSPsolver::reserveStartSlot()
+{
+  int n = static_cast<int>(nodes_.size());
+  ensureCapacity(n + 1);
+  nodes_.insert(nodes_.begin(), planner_t{START_ID, octomap::point3d(0.0, 0.0, 0.0), true});
+  for (auto &kv : id_to_index_)
+    kv.second += 1;
+  id_to_index_[START_ID] = 0;
+  if (n > 0)
+    distances_.block(1, 1, n, n) = distances_.block(0, 0, n, n).eval();
+}
+
+
 // Builds the cost matrix for the current graph/start heading, solves it with LKH, and maps the resulting index tour back to viewpoint positions.
 std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
 {
+  std::scoped_lock solve_lock(mutex_solve_);
+
   ROS_ERROR("start TSP solve");
   start_velocity_ = velocity;
 
-  constructDistanceMatrix();
+  {
+    // Only the snapshot into cost_matrix_/viewpoint_positions_/isAccesible_ needs the dist-graph lock;
+    // releasing it before LKHSolve() keeps syncFrontiers()/setStart() from stalling behind LKH's runtime.
+    std::scoped_lock dist_lock(mutex_dist_graph_);
+    constructDistanceMatrix();
+  }
+
   int n = viewpoint_positions_.size();
   auto permutation = LKHSolve(); //solve(cost_matrix_, true);
 
-  std::vector<octomap::point3d> solution(0);
+  std::vector<octomap::point3d> solution;
+  solution.reserve(permutation.size());
   for (auto i : permutation){
+    // Guards against a stale/mismatched solution.txt (e.g. left over from a failed LKH run)
+    // being parsed into indices that no longer fit the current viewpoint set.
+    if (i < 0 || i >= n)
+    {
+      ROS_ERROR("[TSPsolver]: LKH tour index %d out of range for %d viewpoints, discarding solve result", i, n);
+      solution.clear();
+      break;
+    }
     solution.push_back(viewpoint_positions_[i]);
   }
-  ROS_INFO("dist map size %d, solution size %d, permutation size %d", dist_map_.size(), n, permutation.size());
+  ROS_INFO("dist map size %lu, solution size %d, permutation size %d", nodes_.size(), n, permutation.size());
   ROS_ERROR("end TSP solve");
   return solution;
 }
@@ -109,7 +189,7 @@ std::vector<double> TSPsolver::findPathDistances(const octomap::point3d &start, 
 }
 
 
-// Keeps dist_map_ in sync with the latest frontier set: removes nodes/distances for frontiers no longer present, then adds a node for each new frontier's
+// Keeps the distance graph in sync with the latest frontier set: removes nodes for frontiers no longer present, then adds a node for each new frontier's
 // first viewpoint, with its pairwise distances to all existing nodes computed in a single batched find_simplified_path_in call per new frontier.
 void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr& msg)
 {
@@ -117,6 +197,8 @@ void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr&
 
   ros::WallTime t_checkpoint = ros::WallTime::now();
   ros::WallTime t_total      = ros::WallTime::now();
+
+  std::scoped_lock lock(mutex_dist_graph_);
 
   std::set<unsigned long> incoming_ids;
   for (auto &f : msg->frontiers)
@@ -126,30 +208,15 @@ void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr&
   ROS_INFO("[TSPsolver]: syncFrontiers incoming_ids  %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
 
-  std::vector<uint32_t> removed_ids;
-  for (auto it = dist_map_.begin(); it != dist_map_.end(); )
+  std::vector<unsigned long> removed_ids;
+  for (auto &node : nodes_)
   {
-    if (it->first != START_ID && incoming_ids.count(it->first) == 0)
-    {
-      removed_ids.push_back(it->first);
-      it = dist_map_.erase(it);
-    }
-    else
-    {
-      ++it;
-    }
+    if (node.id != START_ID && incoming_ids.count(node.id) == 0)
+      removed_ids.push_back(node.id);
   }
+  for (auto id : removed_ids)
+    removeNode(id);
 
-  for (auto &x : dist_map_)
-  {
-    for (auto &id : removed_ids)
-    {
-      auto it = x.second.distances.find(id);
-      if (it != x.second.distances.end())
-        x.second.distances.erase(it);
-    }
-  }
-  
   ROS_INFO("[TSPsolver]: syncFrontiers prune_removed %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
   ROS_INFO("[TSPsolver]: syncFrontiers removed %lu frontiers", removed_ids.size());
@@ -158,35 +225,26 @@ void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr&
 
   for (auto &f : msg->frontiers)
   {
-    // not empty and not already in dist_map_
-    if (!f.viewpoints.empty() && dist_map_.count(f.id) == 0)
+    // not empty and not already in the graph
+    if (!f.viewpoints.empty() && id_to_index_.count(f.id) == 0)
     {
       octomap::point3d p1(f.viewpoints[0].position.x, f.viewpoints[0].position.y, f.viewpoints[0].position.z);
-      planner_t new_node = {.id=f.id, .position=p1, .isAccesible=true, .distances=std::map<unsigned long, float>()};
 
-      std::vector<unsigned long> ids;
       std::vector<octomap::point3d> positions;
-      ids.reserve(dist_map_.size());
-      positions.reserve(dist_map_.size());
-      for (auto &x : dist_map_)
-      {
-        ids.push_back(x.first);
-        positions.push_back(x.second.position);
-      }
+      positions.reserve(nodes_.size());
+      for (auto &node : nodes_)
+        positions.push_back(node.position);
 
       std::vector<double> distances = findPathDistances(p1, positions);
 
-      for (size_t i = 0; i < ids.size(); i++)
-      {
-        double dist = distances[i];
-        new_node.distances.insert({ids[i], dist});
-        dist_map_[ids[i]].distances.insert({f.id, dist});
-      }
-      dist_map_.insert({f.id, new_node});
+      int new_index = addNode(f.id, p1, true);
+      for (size_t i = 0; i < distances.size(); i++)
+        setDistance(new_index, static_cast<int>(i), static_cast<float>(distances[i]));
+
       add_cnt += 1;
     }
   }
-  
+
   ROS_INFO("[TSPsolver]: syncFrontiers add_new       %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   ROS_INFO("[TSPsolver]: syncFrontiers added %d frontiers", add_cnt);
 
@@ -194,28 +252,23 @@ void TSPsolver::syncFrontiers(const frontier_detection::FrontierArray::ConstPtr&
   ROS_INFO("[TSPsolver]: ---------------------------");
 }
 
-// Replaces the START_ID node with the given position and recomputes its distance to every other node (one batched find_simplified_path_in call), marking neighbors unreachable (BIG_DISTANCE) as inaccessible.
+// Replaces the START_ID node's position (always index 0 — see reserveStartSlot()) and recomputes its distance to every other node
+// (one batched find_simplified_path_in call), marking neighbors unreachable (BIG_DISTANCE) as inaccessible.
 void TSPsolver::setStart(octomap::point3d position)
 {
   // ROS_ERROR("SET START TSP");
   ros::WallTime t_checkpoint = ros::WallTime::now();
   ros::WallTime t_total      = ros::WallTime::now();
 
-  auto it = dist_map_.find(START_ID);
-  if( it != dist_map_.end() )
-      dist_map_.erase( it );
+  std::scoped_lock lock(mutex_dist_graph_);
 
-  planner_t new_node = {.id=START_ID, .position=position, .isAccesible=true, .distances=std::map<unsigned long, float>()};
+  if (id_to_index_.count(START_ID) == 0)
+    reserveStartSlot();
 
-  std::vector<unsigned long> ids;
   std::vector<octomap::point3d> positions;
-  ids.reserve(dist_map_.size());
-  positions.reserve(dist_map_.size());
-  for (auto &x : dist_map_)
-  {
-    ids.push_back(x.first);
-    positions.push_back(x.second.position);
-  }
+  positions.reserve(nodes_.size() - 1);
+  for (size_t i = 1; i < nodes_.size(); i++)
+    positions.push_back(nodes_[i].position);
   ROS_INFO("[TSPsolver]: setStart gather_ids   %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
 
@@ -223,16 +276,16 @@ void TSPsolver::setStart(octomap::point3d position)
   ROS_INFO("[TSPsolver]: setStart find_dists   %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
 
-  for (size_t i = 0; i < ids.size(); i++)
+  nodes_[0].position    = position;
+  nodes_[0].isAccesible = true;
+  for (size_t i = 0; i < distances.size(); i++)
   {
+    int node_index = static_cast<int>(i) + 1;
     double dist = distances[i];
-    new_node.distances.insert({ids[i], dist});
-    auto &x = dist_map_[ids[i]];
-    x.distances.insert({START_ID, dist});
+    setDistance(0, node_index, static_cast<float>(dist));
     if (dist == octomap_planner_utils::BIG_DISTANCE)
-      x.isAccesible = false;
+      nodes_[node_index].isAccesible = false;
   }
-  dist_map_.insert({START_ID, new_node});
   ROS_INFO("[TSPsolver]: setStart update_map    %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 
   ROS_INFO("[TSPsolver]: setStart total         %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
@@ -241,45 +294,42 @@ void TSPsolver::setStart(octomap::point3d position)
 
 }
 
-// Flattens dist_map_ (excluding START_ID's own row bookkeeping) into cost_matrix_/viewpoint_positions_/isAccesible_; adds a heading-change penalty and, if a KD-tree of guiding viewpoints is set, a nearest-guiding-viewpoint distance term to the start node's row.
+// Flattens the distance graph into cost_matrix_/viewpoint_positions_/isAccesible_ via a single block copy (no per-cell lookups).
 void TSPsolver::constructDistanceMatrix()
 {
-  int size = dist_map_.size();
-  cost_matrix_.resize(size, size);
-  viewpoint_positions_ = std::vector<octomap::point3d>(0);
-  isAccesible_ = std::vector<bool>(0);
-  std::vector<int> idx(1);
-  std::vector<float> dist(1);
+  int size = static_cast<int>(nodes_.size());
+  // Fails loudly (throws) if setStart() was never called; also documents the invariant relied on below.
+  octomap::point3d start_position = nodes_[id_to_index_.at(START_ID)].position;
+  (void)start_position; // only consumed by the commented-out heading-penalty/KD-tree code below
+
+  cost_matrix_ = distances_.topLeftCorner(size, size).cast<double>();
+  cost_matrix_.diagonal().setZero();
+
+  viewpoint_positions_.clear();
+  viewpoint_positions_.reserve(size);
+  isAccesible_.clear();
+  isAccesible_.reserve(size);
+
   float vp_weight = 0.7;
   float dir_weight = 4.0;
-  octomap::point3d start_position = dist_map_[START_ID].position;
-
-  // Fixed node->index mapping (dist_map_ order, START_ID sorts first) shared by both rows and columns,
-  // so cost_matrix_(i,j) always refers to the same pair of nodes regardless of which row is being filled.
-  std::vector<unsigned long> ids;
-  ids.reserve(size);
-  for (auto &entry : dist_map_)
-    ids.push_back(entry.first);
+  (void)vp_weight;
+  (void)dir_weight;
 
   for (int i=0; i<size; i++)
   {
-    auto &value = dist_map_[ids[i]];
-    octomap::point3d position = value.position;
-    viewpoint_positions_.push_back(position);
-    isAccesible_.push_back(value.isAccesible);
-
-    for (int j=0; j<size; j++)
-    {
-      cost_matrix_(i,j) = (i == j) ? 0.0 : value.distances.at(ids[j]);
-    }
+    viewpoint_positions_.push_back(nodes_[i].position);
+    isAccesible_.push_back(nodes_[i].isAccesible);
 
     // if (pcset_)
     // {
-    //   pcl::PointXYZ point = pcl::PointXYZ(position.x(), position.y(), position.z());
+    //   pcl::PointXYZ point = pcl::PointXYZ(nodes_[i].position.x(), nodes_[i].position.y(), nodes_[i].position.z());
     //   if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
     //     cost_matrix_(0, i) += vp_weight*dist[0];
     // }
-    // cost_matrix_(0, i) += dir_weight*std::acos(start_velocity_.normalized().dot((position - start_position).normalized()));
+    // cost_matrix_(0, i) += dir_weight*std::acos(start_velocity_.normalized().dot((nodes_[i].position - start_position).normalized()));
+
+    // START_ID is always index 0 (see reserveStartSlot()), so this is the zero-cost "return to start"
+    // column the ATSP formulation relies on to let LKH produce an open (rather than closed) tour.
     cost_matrix_(i, 0) = 0.0; // BIG_DISTANCE/100;
   }
   // costmatrixViewpointAdjustment();
@@ -291,9 +341,9 @@ void TSPsolver::GlobalParWrite()
   std::ofstream par_file(GlobalPar_);
   par_file << "PROBLEM_FILE = " << GlobalProF_ << "\n"; // TIME_LIMIT
   par_file << "GAIN23 = YES\n";
-  par_file << "TIME_LIMIT = " << std::to_string(GlobalTimeLimit_) << "\n";
+  par_file << "TIME_LIMIT = " << GlobalTimeLimit_ << "\n";
   par_file << "OUTPUT_TOUR_FILE =" << GlobalResult_ << "\n";
-  par_file << "RUNS = " << std::to_string(GlobalRuns_) << "\n";
+  par_file << "RUNS = " << GlobalRuns_ << "\n";
   par_file.close();
 }
 
@@ -312,7 +362,7 @@ void TSPsolver::GlobalProblemWrite(Eigen::MatrixXd& costMat)
     for (int j=0; j<dimension; ++j)
     {
       int int_cost = costMat(i,j)*precision_;
-      prob_file << std::to_string(int_cost) << " ";
+      prob_file << int_cost << ' ';
     }
     prob_file << "\n";
   }
@@ -344,17 +394,21 @@ std::vector<int> TSPsolver::GlobalResultsRead()
   return results;
 }
 
-// Full LKH invocation: writes the .par and cost-matrix problem files, shells out to the bundled LKH binary via a blocking system() call, then reads back the solved tour.
+// Full LKH invocation: writes the cost-matrix problem file (the .par file is written once at construction), shells out to the bundled LKH binary via a blocking system() call, then reads back the solved tour.
 std::vector<int> TSPsolver::LKHSolve()
 {
-  /* write par file */
-  GlobalParWrite();
   /* write problem file */
   GlobalProblemWrite(cost_matrix_);
+  /* drop any previous result so a failed run below can't be mistaken for a stale success */
+  std::remove(GlobalResult_.c_str());
   /* ATSP solving */
   std::string command_ = "cd " + GlobalDir_ + " && ./LKH " + GlobalPar_;
-  const char* charPtr = command_.c_str();
-  int system_back_ = std::system(charPtr);
+  int system_back_ = std::system(command_.c_str());
+  if (system_back_ != 0)
+  {
+    ROS_ERROR("[TSPsolver]: LKH invocation failed (exit code %d)", system_back_);
+    return {};
+  }
   /* read solution results */
   std::vector<int> result = GlobalResultsRead();
   return result;
@@ -369,18 +423,16 @@ void TSPsolver::costmatrixViewpointAdjustment()
   }
   std::vector<int> idx(1);
   std::vector<float> dist(1);
-  int i = 0;
   float weight = 1.0;
 
-  for (auto &el : dist_map_)
+  for (size_t i = 0; i < nodes_.size(); i++)
   {
-    auto p =  el.second.position;
+    auto p = nodes_[i].position;
     pcl::PointXYZ point = pcl::PointXYZ(p.x(), p.y(), p.z());
     if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
     {
       cost_matrix_(0, i) += weight*dist[0];
     }
-    i++;
   }
 }
 

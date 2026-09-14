@@ -14,6 +14,9 @@
 #include <octomap_msgs/Octomap.h>
 #include <octomap_msgs/conversions.h>
 
+#include <visualization_msgs/MarkerArray.h>
+#include <geometry_msgs/Point.h>
+
 #include <frontier_detection/frontier_manager.hpp>
 #include <octomap_planner_utils/utils.hpp>
 #include <frontier_detection/FrontierArray.h>
@@ -23,6 +26,7 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <unordered_set>
 
 
 namespace frontier_detection
@@ -35,6 +39,7 @@ namespace frontier_detection
   // one frontier's worth of drawing data, copied out of a FIS so the visualization worker never touches FrontierManager's own state
   struct FrontierVis
   {
+    unsigned long                                       id; // FIS::id_, stable for the lifetime of the frontier; used to cache/diff cell markers across snapshots
     octomap::point3d                                  center;
     octomap_planner_utils::color_t                     color;
     std::vector<std::pair<octomap::point3d, bool>>     viewpoints; // position, is_best (drawn as a bigger cuboid)
@@ -96,6 +101,11 @@ namespace frontier_detection
       bool                                       bv_map_frame_set_ = false;
       std::atomic<bool>                          map_ready_;
 
+      // frontier ids whose cells marker is currently believed to be displayed in RViz; only ever touched from
+      // visualizationWorker() (same thread-ownership rule as bv_map_frame_set_), used to publish only the diff
+      // (new-frontier ADDs, removed-frontier DELETEs) against pub_frontier_cells_vis_ instead of a full rebuild
+      std::unordered_set<unsigned long>          published_frontier_cell_ids_;
+
       std::unique_ptr<FrontierManager> frontier_manager_;
       std::unique_ptr<mrs_lib::Transformer> transformer_;
 
@@ -120,6 +130,9 @@ namespace frontier_detection
       mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>   sh_control_manager_diag_;
 
       ros::Publisher pub_frontiers_;
+      // frontier cells, published as a CUBE_LIST MarkerArray (one marker per frontier), same style octomap_server uses
+      // for occupied_cells_vis_array, instead of routing them through bv_frontiers_'s per-cuboid triangle drawing
+      ros::Publisher pub_frontier_cells_vis_;
 
       // merges each incoming local-zone octomap into the persistent octree_ (seeding it on the first message), then
       // locates the UAV, derives a local search zone, runs FrontierManager::processNewMap, and publishes viz + frontiers
@@ -202,6 +215,7 @@ namespace frontier_detection
     sh_control_manager_diag_ = mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>(shopts, "diagnostics_in", &Detector::controlManagerDiagCallback, this);
 
     pub_frontiers_ = nh_.advertise<frontier_detection::FrontierArray>("frontiers_out", 1);
+    pub_frontier_cells_vis_ = nh_.advertise<visualization_msgs::MarkerArray>("frontier_cells_vis_array", 1);
 
     transformer_ = std::make_unique<mrs_lib::Transformer>("FrontierDetector");
     transformer_->setDefaultPrefix(_uav_name_);
@@ -403,8 +417,9 @@ namespace frontier_detection
         }
 
         FrontierVis fv;
+        fv.id     = fis->id_;
         fv.center = fis->center_;
-        fv.color  = octomap_planner_utils::getColor(static_cast<int>(snapshot.frontiers.size()));
+        fv.color  = octomap_planner_utils::getColor(static_cast<int>(fis->id_)); // keyed by stable id, not vector index, so a frontier's color doesn't shift as others appear/disappear
         for (size_t vidx = 0; vidx < fis->viewpoints_.size(); vidx++)
         {
           auto &v = fis->viewpoints_[vidx];
@@ -448,6 +463,15 @@ namespace frontier_detection
         bv_map_frame_set_ = true;
       }
 
+      // frontier cells: one CUBE_LIST marker per frontier (same style octomap_server uses for occupied cells), published
+      // as a diff against what's already believed to be displayed. A FIS's cells_ never change after construction (only
+      // valid_/removal-from-fis_c_ do, see FrontierManager::removeFrontiers), so once a frontier's marker has been sent
+      // there is nothing new to say about it until it disappears — RViz keeps showing an ADD marker until it gets a
+      // matching DELETE, so unchanged frontiers need no repeat publish at all.
+      visualization_msgs::MarkerArray cells_msg;
+      std::unordered_set<unsigned long> current_ids;
+      current_ids.reserve(snapshot.frontiers.size());
+
       for (auto &fv : snapshot.frontiers)
       {
         bv_frontiers_->addPoint(Eigen::Vector3d(fv.center.x(), fv.center.y(), fv.center.z()), fv.color.r, fv.color.g, fv.color.b, 1.0);
@@ -462,15 +486,58 @@ namespace frontier_detection
           bv_frontiers_->addCuboid(c, fv.color.r, fv.color.g, fv.color.b, 1.0, true);
         }
 
+        current_ids.insert(fv.id);
+
+        if (published_frontier_cell_ids_.count(fv.id) > 0) {
+          // already displayed and its cells can't have changed since; nothing to (re)send
+          continue;
+        }
+
+        visualization_msgs::Marker cells_marker;
+        cells_marker.header.frame_id = snapshot.frame_id;
+        cells_marker.header.stamp    = ros::Time::now();
+        cells_marker.ns              = "frontier_cells";
+        cells_marker.id              = static_cast<int32_t>(fv.id);
+        cells_marker.type            = visualization_msgs::Marker::CUBE_LIST;
+        cells_marker.action          = visualization_msgs::Marker::ADD;
+        cells_marker.pose.orientation.w = 1.0;
+        cells_marker.scale.x = cells_marker.scale.y = cells_marker.scale.z = snapshot.resolution * 0.5;
+        cells_marker.color.r = fv.color.r;
+        cells_marker.color.g = fv.color.g;
+        cells_marker.color.b = fv.color.b;
+        cells_marker.color.a = 0.1;
+
+        cells_marker.points.reserve(fv.cells.size());
         for (auto &cell : fv.cells)
         {
-          Eigen::Vector3d           center(cell.x(), cell.y(), cell.z());
-          double                    cube_scale  = snapshot.resolution * 0.5;
-          Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
-          Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
-          mrs_lib::geometry::Cuboid c(center, size, orientation);
-          bv_frontiers_->addCuboid(c, fv.color.r, fv.color.g, fv.color.b, 0.1, true);
+          geometry_msgs::Point p;
+          p.x = cell.x();
+          p.y = cell.y();
+          p.z = cell.z();
+          cells_marker.points.push_back(p);
         }
+        cells_msg.markers.push_back(std::move(cells_marker));
+      }
+
+      // frontiers that were displayed before but are no longer present in this snapshot: explicitly delete their marker
+      for (auto id : published_frontier_cell_ids_)
+      {
+        if (current_ids.count(id) > 0) {
+          continue;
+        }
+        visualization_msgs::Marker delete_marker;
+        delete_marker.header.frame_id = snapshot.frame_id;
+        delete_marker.header.stamp    = ros::Time::now();
+        delete_marker.ns              = "frontier_cells";
+        delete_marker.id              = static_cast<int32_t>(id);
+        delete_marker.action          = visualization_msgs::Marker::DELETE;
+        cells_msg.markers.push_back(std::move(delete_marker));
+      }
+
+      published_frontier_cell_ids_ = std::move(current_ids);
+
+      if (!cells_msg.markers.empty()) {
+        pub_frontier_cells_vis_.publish(cells_msg);
       }
 
       {
