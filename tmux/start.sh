@@ -6,6 +6,7 @@ SCRIPT=$(readlink -f $0)
 SCRIPTPATH=`dirname $SCRIPT`
 cd "$SCRIPTPATH"
 
+export WORLD_NAME="$1"
 export TMUX_SESSION_NAME=simulation
 export TMUX_SOCKET_NAME=mrs
 

@@ -5,7 +5,17 @@ socket_name: mrs
 attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 # you can modify these
-pre_window: export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x500
+# GAZEBO_RESOURCE_PATH lets .world files reference their mesh with a relative
+# file:// uri (e.g. file://<world_name>/<world_name>.dae) resolved against
+# WORLDS_DIR, same as mrs_gazebo_common_resources' gazebo_media_path export
+# does for its own models (file:// uris resolve via the resource path list,
+# not the model path list, so GAZEBO_MODEL_PATH alone isn't enough)
+pre_window: 'export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x500;
+            export WORLDS_DIR=$(cd .. && pwd)/worlds;
+            export GAZEBO_MODEL_PATH="$WORLDS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}";
+            export GAZEBO_RESOURCE_PATH="$WORLDS_DIR${GAZEBO_RESOURCE_PATH:+:$GAZEBO_RESOURCE_PATH}";
+            SPAWN_POSITION=$(sed -n "s/^spawn_position: *\"\(.*\)\"/\1/p" "${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml")'
+
 startup_window: nodelets
 windows:
   - roscore:
@@ -15,7 +25,7 @@ windows:
   - gazebo:
       layout: tiled
       panes:
-        - waitForRos; roslaunch mrs_uav_gazebo_simulation simulation.launch gui:=false world_file:=/home/david/user_ros_workspace/worlds/${WORLD_NAME}.world
+        - waitForRos; roslaunch mrs_uav_gazebo_simulation simulation.launch gui:=false world_file:=${WORLDS_DIR}/${WORLD_NAME}/${WORLD_NAME}.world
         - waitForControl; gz camera -c gzclient_camera -f $UAV_NAME; history -s gz camera -c gzclient_camera -f $UAV_NAME
   - status:
       layout: tiled
@@ -62,8 +72,8 @@ windows:
       panes:
         # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
         - waitForHw; roslaunch tsp_solver tsp_solver.launch
-        - waitForHw; roslaunch frontier_detection detector.launch
-        - waitForHw; roslaunch path_planning path_planning.launch
+        - waitForHw; roslaunch frontier_detection detector.launch bounds_file_config:=${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml
+        - waitForHw; roslaunch path_planning path_planning.launch bounds_file_config:=${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml
   - skeleton:
       layout: tiled
       panes:

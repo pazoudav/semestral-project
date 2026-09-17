@@ -2,9 +2,7 @@
 
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
 
-  <arg name="ZONE_X" default="$(env ZONE_X)" />
-  <arg name="ZONE_Y" default="$(env ZONE_Y)" />
-  <arg name="ZONE_Z" default="$(env ZONE_Z)" />
+  <arg name="bounds_file_config" default="" />
 
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
@@ -29,12 +27,9 @@
     <node pkg="nodelet" type="nodelet" name="frontier_detector" args="$(arg nodelet) frontier_detection/Detector $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
       <rosparam file="$(find frontier_detection)/config/detector.yaml" command="load" />
+      <rosparam file="$(arg bounds_file_config)" command="load" />
 
       <param name="uav_name" value="$(arg UAV_NAME)" />
-
-      <param name="zone_x" value="$(arg ZONE_X)" />
-      <param name="zone_y" value="$(arg ZONE_Y)" />
-      <param name="zone_z" value="$(arg ZONE_Z)" />
 
       <!-- topics in -->
       <remap from="~tracker_cmd_in" to="control_manager/tracker_cmd" />
