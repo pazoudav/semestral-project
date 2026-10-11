@@ -1,0 +1,20 @@
+planning:
+  replanning_distance: 0.6
+  skip_path_point_distance: 0.4
+  flight_free_distance: 0.6
+  replan_request_cooldown: 0.5 # [s] min interval between replan_request_out service calls, to avoid overwhelming the service
+  stuck_distance: 0.1 # [m] min movement over stuck_duration to not be considered stuck
+  stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE
+
+prm:
+  free_space_diameter: 1.2   # was kept in sync with the removed prm_solver's prm.free_space_diameter; path_planner has no direct equivalent (closest: min_obstacle_clearance in path_planner/config/path_planner.yaml)
+
+viz:
+  scale:
+    points: 0.05
+    lines: 0.02
+
+timer_rates:
+  main: 10.0
+  path: 10.0
+  fast: 20.0

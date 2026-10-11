@@ -1,0 +1,7 @@
+geometry_msgs/Point start
+geometry_msgs/Point[] goals
+geometry_msgs/Vector3 velocity
+bool use_raycast
+---
+path_planner/Path[] paths
+bool[] success

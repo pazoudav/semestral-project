@@ -1,0 +1,104 @@
+# do not modify these
+root: ./
+name: simulation
+socket_name: mrs
+attach: false
+tmux_options: -f /etc/ctu-mrs/tmux.conf
+# you can modify these
+pre_window: 'export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x500;
+            export WORLDS_DIR=$(cd .. && pwd)/worlds;
+            export PATH="$(cd .. && pwd)/scripts/bin:$PATH";
+            export GAZEBO_MODEL_PATH="$WORLDS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}";
+            export GAZEBO_RESOURCE_PATH="$WORLDS_DIR${GAZEBO_RESOURCE_PATH:+:$GAZEBO_RESOURCE_PATH}";
+            ulimit -c unlimited;
+            SPAWN_POSITION=$(sed -n "s/^spawn_position: *\"\(.*\)\"/\1/p" "${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml")'
+
+startup_window: mapplan
+windows:
+  - roscore:
+      layout: tiled
+      panes:
+        - roscore
+  - gazebo:
+      layout: tiled
+      panes:
+        - waitForRos; roslaunch mrs_uav_gazebo_simulation simulation.launch gui:=false world_file:=${WORLDS_DIR}/${WORLD_NAME}/${WORLD_NAME}.world
+        - waitForControl; gz camera -c gzclient_camera -f $UAV_NAME; history -s gz camera -c gzclient_camera -f $UAV_NAME
+  - status:
+      layout: tiled
+      panes:
+        - waitForHw; roslaunch mrs_uav_status status.launch
+  - spawn:
+      layout: tiled
+      panes:
+        - waitForGazebo; rosservice call /mrs_drone_spawner/spawn "1 $UAV_TYPE --pos $SPAWN_POSITION --enable-rangefinder --enable-ground-truth --enable-ouster model:=OS0-128 use_gpu:=True"
+  - hw_api:
+      layout: tiled
+      panes:
+        - waitForTime; roslaunch mrs_uav_px4_api api.launch # custom_config:=./config/hw_api.yaml
+  - core:
+      layout: tiled
+      panes:
+        - waitForHw; roslaunch mrs_uav_core core.launch
+          platform_config:=`rospack find mrs_uav_gazebo_simulation`/config/mrs_uav_system/$UAV_TYPE.yaml
+          custom_config:=./config/custom_config.yaml
+          world_config:=./config/world_config.yaml
+          network_config:=./config/network_config.yaml
+  - takeoff:
+      layout: tiled
+      panes:
+        - waitForHw; roslaunch mrs_uav_autostart automatic_start.launch
+        - 'waitForControl; rosservice call /$UAV_NAME/hw_api/arming 1; sleep 2; rosservice call /$UAV_NAME/hw_api/offboard'
+  - mapplan:
+      layout: tiled
+      panes:
+        # restarts the mapping stack whenever it exits (the nodelet manager is required="true", so an octomap_server crash
+        # ends roslaunch). Ctrl+C stops the loop. Only the shared-manager setup restarts - under debug:=true gdb keeps
+        # the crashed nodelet alive at its prompt, so nothing exits
+        - waitForHw; while true; do roslaunch mrs_octomap_mapping_planning mapplan.launch
+          config_octomap_server:=./config/octomap_server.yaml
+          config_pcl_filter_ouster:=./config/ouster_filter_mapping.yaml
+          config_pcl_filter_rs_front:=./config/rs_front_filter.yaml
+          config_pcl_filter_rs_down:=./config/rs_down_filter.yaml;
+          echo "[$(date +%T)] mapplan exited, restarting in 3 s (Ctrl+C to stop)"; sleep 3 || break; done
+          # debug:=true
+          # config_octomap_planner:=./config/octomap_planner.yaml
+        # pauses gazebo physics when a mapping nodelet crashes. --debug watches the standalone nodelets of debug:=true (gdb stops them),
+        # drop it when debug:=true is removed above to watch the shared uav1_mapping_nodelet_manager instead.
+        # disabled while mapplan auto-restarts above - it would freeze the sim on every crash the restart recovers from
+        # - waitForHw; ../scripts/pause_on_crash.py --debug
+  - explorer:
+      layout: tiled
+      panes:
+        # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        - waitForHw; roslaunch explorer explorer.launch
+  
+  - nodelets:
+      layout: tiled
+      panes:
+        # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
+        - waitForHw; roslaunch frontier_detector detector.launch bounds_file_config:=${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml
+        - waitForHw; roslaunch path_planner path_planner.launch bounds_file_config:=${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml
+        - waitForHw; roslaunch tsp_solver tsp_solver.launch 
+        - waitForHw; roslaunch clustering clustering.launch
+  # - skeleton:
+  #     layout: tiled
+  #     panes:
+  #       - waitForGazebo; 
+  #         cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker;
+  #         cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
+  #       - waitForHw; roslaunch skeleton_estimator skeleton_estimator.launch
+  #       # - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker; 
+  #       #   cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray;
+  #       # - waitForGazebo; roslaunch skeleton_estimator skeleton_estimator.launch
+        
+  - rviz:
+      layout: tiled
+      panes:
+        - waitForControl; rosrun rviz rviz -d ./rviz.rviz
+        - waitForControl; roslaunch mrs_rviz_plugins load_robot.launch
+        - waitForTime; waitForControl; roslaunch mrs_rviz_plugins rviz_interface.launch rviz_topic_name:='/move_base_simple/goal' reference_service_name:="/$UAV_NAME/octomap_planner/reference"
+  - layout:
+      layout: tiled
+      panes:
+        - waitForControl; sleep 4; ~/.i3/layout_manager.sh ./layout.json

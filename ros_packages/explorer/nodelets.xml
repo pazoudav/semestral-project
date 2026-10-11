@@ -1,0 +1,11 @@
+<!-- <library path="lib/libExplorer_OctomapPlanner">
+  <class name="explorer/OctomapPlanner" type="explorer::OctomapPlanner" base_class_type="nodelet::Nodelet">
+    <description>MRS Octomap Planner nodelet</description>
+  </class>
+</library> -->
+
+<library path="lib/libExplorer">
+  <class name="explorer/Explorer" type="explorer::Explorer" base_class_type="nodelet::Nodelet">
+    <description>MRS Minimal Octomap Planner nodelet</description>
+  </class>
+</library>

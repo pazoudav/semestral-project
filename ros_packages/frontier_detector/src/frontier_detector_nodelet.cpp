@@ -1,0 +1,631 @@
+#include <ros/ros.h>
+#include <nodelet/nodelet.h>
+
+#include <mrs_lib/subscribe_handler.h>
+#include <mrs_lib/batch_visualizer.h>
+#include <mrs_lib/mutex.h>
+#include <mrs_lib/param_loader.h>
+#include <mrs_lib/transformer.h>
+
+#include <mrs_msgs/TrackerCommand.h>
+#include <mrs_msgs/ControlManagerDiagnostics.h>
+
+#include <octomap/octomap.h>
+#include <octomap_msgs/Octomap.h>
+#include <octomap_msgs/conversions.h>
+
+#include <visualization_msgs/MarkerArray.h>
+#include <geometry_msgs/Point.h>
+
+#include <frontier_detector/frontier_detector.hpp>
+#include <explorer_utils/utils.hpp>
+#include <frontier_detector/FrontierArray.h>
+
+#include <optional>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
+#include <unordered_set>
+
+
+namespace frontier_detector
+{
+
+  using OcTree_t          = octomap::OcTree;
+  using OcTreeUniquePtr_t = std::unique_ptr<octomap::OcTree>;
+
+
+  // one frontier's worth of drawing data, copied out of a FIS so the visualization worker never touches FrontierDetector's own state
+  struct FrontierVis
+  {
+    unsigned long                                       id; // FIS::id_, stable for the lifetime of the frontier; used to cache/diff cell markers across snapshots
+    octomap::point3d                                  center;
+    explorer_utils::color_t                     color;
+    std::vector<std::pair<octomap::point3d, bool>>     viewpoints; // position, is_best (drawn as a bigger cuboid)
+    frontier_t                                          cells;
+  };
+
+  // a full, self-contained snapshot of what bv_frontiers_ should currently show; built cheaply on the octomap-callback thread
+  // and handed off to the visualization worker thread, which does the (comparatively expensive) marker construction + publish
+  struct VisualizationSnapshot
+  {
+    std::string                  frame_id;
+    double                       resolution;
+    explorer_utils::AABB  zone;
+    explorer_utils::AABB  tree_bbox;
+    std::vector<FrontierVis>     frontiers;
+  };
+
+
+  class FrontierDetectorNodelet : public nodelet::Nodelet
+  {
+    public:
+      virtual void onInit();
+      ~FrontierDetectorNodelet();
+
+    private:
+      ros::NodeHandle nh_;
+
+      bool        is_initialized_ = false;
+      std::string _uav_name_;
+
+      // params
+      double _flight_zone_width_x_;
+      double _flight_zone_width_y_;
+      double _flight_zone_height_;
+      double _flight_zone_floor_;
+      double _local_zone_width_;
+      double _local_zone_height_;
+      double _free_space_dia_;
+      int    _frontier_min_size_;
+      int    _min_eigen_;
+      double _size_decrease_ratio_;
+      int    _sample_attemps_;
+      int    _max_viewpoint_cnt_;
+      int    _min_viewpoint_coverage_;
+      double _viewpoint_sample_radius_;
+      double _viewpoint_sample_height_;
+      double _viewpoint_max_distance_;
+      double _viewpoint_max_angle_;
+      double _scale_points_;
+      double _scale_lines_;
+
+      explorer_utils::AABB flight_zone_;
+
+      std::mutex                                mutex_octree_;
+      std::mutex                                mutex_frontiers_;
+      std::unique_ptr<OcTree_t>                 octree_ = nullptr; // persistent map built up purely by merging in successive local-zone octomaps
+      std::string                               octree_frame_;
+      std::shared_ptr<mrs_lib::BatchVisualizer> bv_frontiers_;
+      bool                                       bv_map_frame_set_ = false;
+      std::atomic<bool>                          map_ready_;
+
+      // frontier ids whose cells marker is currently believed to be displayed in RViz; only ever touched from
+      // visualizationWorker() (same thread-ownership rule as bv_map_frame_set_), used to publish only the diff
+      // (new-frontier ADDs, removed-frontier DELETEs) against pub_frontier_cells_vis_ instead of a full rebuild
+      std::unordered_set<unsigned long>          published_frontier_cell_ids_;
+
+      std::unique_ptr<FrontierDetector> frontier_detector_;
+      std::unique_ptr<mrs_lib::Transformer> transformer_;
+
+      // background visualization worker: keeps all bv_frontiers_ marker construction + publish() off the octomap-callback thread.
+      // only ever touched by visualizationWorker() itself once started, so bv_frontiers_/bv_map_frame_set_ need no locking there.
+      std::thread             vis_thread_;
+      std::mutex              vis_mutex_;
+      std::condition_variable vis_cv_;
+      std::optional<VisualizationSnapshot> pending_vis_snapshot_;
+      bool                     vis_shutdown_ = false;
+
+      // background tree cleanup worker: retired octrees (replaced by a fresher one each callback) are handed off here so that
+      // freeing every node of a large OcTree happens off the octomap-callback thread instead of inside the callback itself.
+      std::thread                             tree_cleanup_thread_;
+      std::mutex                              tree_cleanup_mutex_;
+      std::condition_variable                 tree_cleanup_cv_;
+      std::vector<std::unique_ptr<OcTree_t>>  pending_tree_cleanup_;
+      bool                                     tree_cleanup_shutdown_ = false;
+
+      mrs_lib::SubscribeHandler<octomap_msgs::Octomap>                sh_octomap_local_;
+      mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>              sh_tracker_cmd_;
+      mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>   sh_control_manager_diag_;
+
+      ros::Publisher pub_frontiers_;
+      // frontier cells, published as a CUBE_LIST MarkerArray (one marker per frontier), same style octomap_server uses
+      // for occupied_cells_vis_array, instead of routing them through bv_frontiers_'s per-cuboid triangle drawing
+      ros::Publisher pub_frontier_cells_vis_;
+
+      // merges each incoming local-zone octomap into the persistent octree_ (seeding it on the first message), then
+      // locates the UAV, derives a local search zone, runs FrontierDetector::processNewMap, and publishes viz + frontiers
+      void callbackOctomapLocal(const octomap_msgs::Octomap::ConstPtr msg);
+      void controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg);
+
+      void timeoutOctomapLocal(const std::string& topic, const ros::Time& last_msg);
+      void timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg);
+
+      // current UAV reference position in the octomap's frame, derived from tracker command + control-manager diagnostics freshness
+      std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> getPosition();
+      // builds and publishes a FrontierArray with the single best (highest-coverage) viewpoint per valid frontier
+      void                                                             publishFrontiers();
+
+      // copies the current frontier state (under mutex_frontiers_) into a VisualizationSnapshot and hands it to the visualization worker
+      void enqueueVisualization();
+      // background loop: waits for a new snapshot, then draws it into bv_frontiers_ and publishes/clears it
+      void visualizationWorker();
+
+      // hands a retired octree off to the cleanup worker instead of destroying it (and freeing every one of its nodes) on the caller's thread
+      void retireTree(std::unique_ptr<OcTree_t> tree);
+      // background loop: waits for retired octrees and destroys them off the octomap-callback thread
+      void treeCleanupWorker();
+  };
+
+
+  void FrontierDetectorNodelet::onInit()
+  {
+    ros::Time::waitForValid();
+
+    ROS_INFO("[FrontierDetectorNodelet]: initializing...");
+    nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+
+    mrs_lib::ParamLoader param_loader(nh_, "FrontierDetector");
+
+    param_loader.loadParam("uav_name", _uav_name_);
+
+    param_loader.loadParam("zone_x", _flight_zone_width_x_);
+    param_loader.loadParam("zone_y", _flight_zone_width_y_);
+    param_loader.loadParam("zone_z", _flight_zone_height_);
+    param_loader.loadParam("zone/global/floor", _flight_zone_floor_);
+    param_loader.loadParam("zone/local/width", _local_zone_width_);
+    param_loader.loadParam("zone/local/height", _local_zone_height_);
+
+    param_loader.loadParam("prm/free_space_diameter", _free_space_dia_);
+
+    param_loader.loadParam("frontiers/min_size", _frontier_min_size_);
+    param_loader.loadParam("frontiers/min_svd_eigen_value", _min_eigen_);
+    param_loader.loadParam("frontiers/size_decrease_ratio", _size_decrease_ratio_);
+
+    param_loader.loadParam("frontiers/viewpoint/sample_attempts", _sample_attemps_);
+    param_loader.loadParam("frontiers/viewpoint/max_count", _max_viewpoint_cnt_);
+    param_loader.loadParam("frontiers/viewpoint/min_coverage", _min_viewpoint_coverage_);
+    param_loader.loadParam("frontiers/viewpoint/sample_radius", _viewpoint_sample_radius_);
+    param_loader.loadParam("frontiers/viewpoint/sample_height", _viewpoint_sample_height_);
+    param_loader.loadParam("frontiers/viewpoint/max_distance", _viewpoint_max_distance_);
+    param_loader.loadParam("frontiers/viewpoint/max_angle", _viewpoint_max_angle_);
+
+    param_loader.loadParam("viz/scale/points", _scale_points_);
+    param_loader.loadParam("viz/scale/lines", _scale_lines_);
+
+    if (!param_loader.loadedSuccessfully()) {
+      ROS_ERROR("[FrontierDetectorNodelet]: Could not load all parameters");
+      ros::shutdown();
+    }
+
+    mrs_lib::SubscribeHandlerOptions shopts;
+    shopts.nh                 = nh_;
+    shopts.node_name          = "FrontierDetector";
+    shopts.no_message_timeout = mrs_lib::no_timeout;
+    shopts.threadsafe         = true;
+    shopts.autostart          = true;
+    shopts.queue_size         = 1;
+    shopts.transport_hints    = ros::TransportHints().tcpNoDelay();
+
+    sh_octomap_local_ = mrs_lib::SubscribeHandler<octomap_msgs::Octomap>(shopts, "octomap_local_in", ros::Duration(5.0),
+                                                                          &FrontierDetectorNodelet::timeoutOctomapLocal, this,
+                                                                          &FrontierDetectorNodelet::callbackOctomapLocal, this);
+    sh_tracker_cmd_          = mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>(shopts, "tracker_cmd_in", ros::Duration(3.0), &FrontierDetectorNodelet::timeoutTrackerCmd, this);
+    sh_control_manager_diag_ = mrs_lib::SubscribeHandler<mrs_msgs::ControlManagerDiagnostics>(shopts, "diagnostics_in", &FrontierDetectorNodelet::controlManagerDiagCallback, this);
+
+    pub_frontiers_ = nh_.advertise<frontier_detector::FrontierArray>("frontiers_out", 1);
+    pub_frontier_cells_vis_ = nh_.advertise<visualization_msgs::MarkerArray>("frontier_cells_vis_array", 1);
+
+    transformer_ = std::make_unique<mrs_lib::Transformer>("FrontierDetector");
+    transformer_->setDefaultPrefix(_uav_name_);
+    transformer_->retryLookupNewest(true);
+
+    bv_frontiers_ = std::make_shared<mrs_lib::BatchVisualizer>(nh_, "visualize_frontiers", "");
+    bv_frontiers_->setPointsScale(_scale_points_);
+    bv_frontiers_->setLinesScale(_scale_lines_);
+
+    frontier_detector_ = std::make_unique<FrontierDetector>(_free_space_dia_,
+                                                           _frontier_min_size_,
+                                                           _min_eigen_,
+                                                           _size_decrease_ratio_,
+                                                           _sample_attemps_,
+                                                           _viewpoint_sample_radius_,
+                                                           _viewpoint_sample_height_,
+                                                           _viewpoint_max_distance_,
+                                                           _viewpoint_max_angle_,
+                                                           _max_viewpoint_cnt_,
+                                                           _min_viewpoint_coverage_);
+
+    flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_x_/2.0, -_flight_zone_width_y_/2.0, _flight_zone_floor_),
+                    .max=octomap::point3d( _flight_zone_width_x_/2.0,  _flight_zone_width_y_/2.0, _flight_zone_floor_+_flight_zone_height_)};
+
+    map_ready_ = false;
+
+    vis_thread_ = std::thread(&FrontierDetectorNodelet::visualizationWorker, this);
+    tree_cleanup_thread_ = std::thread(&FrontierDetectorNodelet::treeCleanupWorker, this);
+
+    is_initialized_ = true;
+    ROS_INFO("[FrontierDetectorNodelet]: initialized!");
+  }
+
+  FrontierDetectorNodelet::~FrontierDetectorNodelet()
+  {
+    {
+      std::scoped_lock lock(vis_mutex_);
+      vis_shutdown_ = true;
+    }
+    vis_cv_.notify_all();
+    if (vis_thread_.joinable()) {
+      vis_thread_.join();
+    }
+
+    {
+      std::scoped_lock lock(tree_cleanup_mutex_);
+      tree_cleanup_shutdown_ = true;
+    }
+    tree_cleanup_cv_.notify_all();
+    if (tree_cleanup_thread_.joinable()) {
+      tree_cleanup_thread_.join();
+    }
+  }
+
+  // on each new local-zone octomap: merges it into the persistent octree_ (seeding it on the first message), locates
+  // the UAV, derives a local search zone around it, runs FrontierDetector::processNewMap, then publishes viz + frontiers.
+  // octree_ is never populated from a global-map topic; it exists purely as the accumulation of these local updates.
+  void FrontierDetectorNodelet::callbackOctomapLocal(const octomap_msgs::Octomap::ConstPtr msg)
+  {
+    if (!is_initialized_) {
+      return;
+    }
+
+    ros::WallTime t_start = ros::WallTime::now();
+    ros::WallTime t_start_glob = ros::WallTime::now();
+
+    OcTreeUniquePtr_t local_tree(dynamic_cast<OcTree_t*>(octomap_msgs::msgToMap(*msg)));
+
+    if (!local_tree) {
+      ROS_WARN_THROTTLE(1.0, "[FrontierDetectorNodelet]: received local map is empty!");
+      return;
+    }
+
+    ROS_INFO("loadMsg    %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
+
+    {
+      std::scoped_lock lock(mutex_octree_);
+      if (!octree_) {
+        // seed the persistent global tree from the first local map received
+        octree_ = std::move(local_tree);
+      }
+      else {
+        local_tree->expand();
+        explorer_utils::mergeInto(*local_tree, *octree_);
+      }
+      octree_frame_ = msg->header.frame_id;
+    }
+    retireTree(std::move(local_tree));
+
+    map_ready_ = true;
+
+    ROS_INFO("mergeLocal %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
+
+    auto res = getPosition();
+    if (!res) {
+      ROS_WARN_THROTTLE(1.0, "[FrontierDetectorNodelet]: has no reference");
+      return;
+    }
+
+    auto pos = res.value().reference.position;
+
+    {
+      // octree_ is held locked from the start-key lookup through processNewMap so this callback's
+      // reads/traversal of the tree can't race with another callback's concurrent mergeInto (both
+      // can run concurrently under the MT nodelet handle) mutating the same nodes mid-read
+      std::scoped_lock lock(mutex_octree_, mutex_frontiers_);
+
+      octomap::point3d start_coord(pos.x, pos.y, pos.z);
+      octomap::OcTreeKey start_key = octree_->coordToKey(start_coord);
+      octomap::OcTreeNode* start_node = octree_->search(start_key);
+      start_coord = octree_->keyToCoord(start_key);
+
+      if (!start_node || octree_->isNodeOccupied(start_node)) {
+        ROS_WARN("[FrontierDetectorNodelet]: start not present in tree or occupied");
+        return;
+      }
+
+      // extract frontiers only from local area, frontiers outside cannot change
+      explorer_utils::AABB local_zone = explorer_utils::localZoneFromPosition(start_coord, flight_zone_, _local_zone_width_, _local_zone_height_);
+
+      ROS_INFO("preprocess %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+      t_start = ros::WallTime::now();
+
+      frontier_detector_->processNewMap(octree_.get(), local_zone, start_key);
+    }
+
+    ROS_INFO("search     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    t_start = ros::WallTime::now();
+
+    publishFrontiers();
+    enqueueVisualization();
+
+    ROS_INFO("pubAndViz  %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("full run   %4.0fms,",  1000*(ros::WallTime::now() - t_start_glob).toSec());
+
+    ROS_INFO("-----------------------------------");
+  }
+
+  void FrontierDetectorNodelet::publishFrontiers()
+  {
+    frontier_detector::FrontierArray msg;
+    msg.header.stamp    = ros::Time::now();
+    msg.header.frame_id = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+
+    {
+      std::scoped_lock lock(mutex_frontiers_);
+      for (auto &fis : frontier_detector_->fis_c_)
+      {
+        if (!fis->valid_ || fis->viewpoints_.empty()) {
+          continue;
+        }
+
+        frontier_detector::Frontier frontier_msg;
+        frontier_msg.id = static_cast<uint32_t>(fis->id_);
+        frontier_msg.size = fis->cellCnt();
+        for (auto &v : fis->viewpoints_)
+        {
+          frontier_detector::Viewpoint viewpoint_msg;
+          viewpoint_msg.position.x = v.position.x();
+          viewpoint_msg.position.y = v.position.y();
+          viewpoint_msg.position.z = v.position.z();
+          viewpoint_msg.coverage   = v.coverage;
+          frontier_msg.viewpoints.push_back(viewpoint_msg);
+          break;
+        }
+        msg.frontiers.push_back(frontier_msg);
+      }
+    }
+    
+
+    pub_frontiers_.publish(msg);
+  }
+
+  void FrontierDetectorNodelet::enqueueVisualization()
+  {
+    VisualizationSnapshot snapshot;
+    snapshot.frame_id = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+    {
+      std::scoped_lock lock(mutex_octree_);
+      snapshot.resolution = octree_->getResolution();
+      // double min_x, min_y, min_z, max_x, max_y, max_z;
+      // octree_->getMetricMin(min_x, min_y, min_z);
+      // octree_->getMetricMax(max_x, max_y, max_z);
+      // snapshot.tree_bbox.min = octomap::point3d(min_x, min_y, min_z);
+      // snapshot.tree_bbox.max = octomap::point3d(max_x, max_y, max_z);
+    }
+
+    {
+      std::scoped_lock lock(mutex_frontiers_);
+      snapshot.zone = frontier_detector_->currentZone();
+      int min_coverage = frontier_detector_->minCoverage();
+
+      for (auto &fis : frontier_detector_->fis_c_)
+      {
+        if (!fis->valid_) {
+          continue;
+        }
+
+        FrontierVis fv;
+        fv.id     = fis->id_;
+        fv.center = fis->center_;
+        fv.color  = explorer_utils::getColor(static_cast<int>(fis->id_)); // keyed by stable id, not vector index, so a frontier's color doesn't shift as others appear/disappear
+        for (size_t vidx = 0; vidx < fis->viewpoints_.size(); vidx++)
+        {
+          auto &v = fis->viewpoints_[vidx];
+          if (v.coverage >= min_coverage)
+          {
+            fv.viewpoints.emplace_back(v.position, vidx == 0);
+          }
+        }
+        fv.cells = fis->cells_;
+        snapshot.frontiers.push_back(std::move(fv));
+      }
+    }
+
+    {
+      std::scoped_lock lock(vis_mutex_);
+      pending_vis_snapshot_ = std::move(snapshot);
+    }
+    vis_cv_.notify_one();
+  }
+
+  // runs on its own thread for the lifetime of the nodelet: waits for a fresh snapshot, then does all the (comparatively
+  // expensive) BatchVisualizer marker construction + publish/clearBuffers, keeping it off the octomap-callback thread.
+  // bv_frontiers_/bv_map_frame_set_ are only ever touched from this thread, so no locking is needed around them here.
+  void FrontierDetectorNodelet::visualizationWorker()
+  {
+    while (true)
+    {
+      VisualizationSnapshot snapshot;
+      {
+        std::unique_lock lock(vis_mutex_);
+        vis_cv_.wait(lock, [this] { return vis_shutdown_ || pending_vis_snapshot_.has_value(); });
+        if (vis_shutdown_) {
+          return;
+        }
+        snapshot = std::move(pending_vis_snapshot_.value());
+        pending_vis_snapshot_.reset();
+      }
+
+      if (!bv_map_frame_set_) {
+        bv_frontiers_->setParentFrame(snapshot.frame_id);
+        bv_map_frame_set_ = true;
+      }
+
+      // frontier cells: one CUBE_LIST marker per frontier (same style octomap_server uses for occupied cells), published
+      // as a diff against what's already believed to be displayed. A FIS's cells_ never change after construction (only
+      // valid_/removal-from-fis_c_ do, see FrontierDetector::removeFrontiers), so once a frontier's marker has been sent
+      // there is nothing new to say about it until it disappears — RViz keeps showing an ADD marker until it gets a
+      // matching DELETE, so unchanged frontiers need no repeat publish at all.
+      visualization_msgs::MarkerArray cells_msg;
+      std::unordered_set<unsigned long> current_ids;
+      current_ids.reserve(snapshot.frontiers.size());
+
+      for (auto &fv : snapshot.frontiers)
+      {
+        bv_frontiers_->addPoint(Eigen::Vector3d(fv.center.x(), fv.center.y(), fv.center.z()), fv.color.r, fv.color.g, fv.color.b, 1.0);
+
+        for (auto &[pos, is_best] : fv.viewpoints)
+        {
+          Eigen::Vector3d           center(pos.x(), pos.y(), pos.z());
+          double                    cube_scale  = snapshot.resolution * (is_best ? 0.6 : 0.2);
+          Eigen::Vector3d           size        = Eigen::Vector3d(1, 1, 1) * cube_scale;
+          Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+          mrs_lib::geometry::Cuboid c(center, size, orientation);
+          bv_frontiers_->addCuboid(c, fv.color.r, fv.color.g, fv.color.b, 1.0, true);
+        }
+
+        current_ids.insert(fv.id);
+
+        if (published_frontier_cell_ids_.count(fv.id) > 0) {
+          // already displayed and its cells can't have changed since; nothing to (re)send
+          continue;
+        }
+
+        visualization_msgs::Marker cells_marker;
+        cells_marker.header.frame_id = snapshot.frame_id;
+        cells_marker.header.stamp    = ros::Time::now();
+        cells_marker.ns              = "frontier_cells";
+        cells_marker.id              = static_cast<int32_t>(fv.id);
+        cells_marker.type            = visualization_msgs::Marker::CUBE_LIST;
+        cells_marker.action          = visualization_msgs::Marker::ADD;
+        cells_marker.pose.orientation.w = 1.0;
+        cells_marker.scale.x = cells_marker.scale.y = cells_marker.scale.z = snapshot.resolution * 0.5;
+        cells_marker.color.r = fv.color.r;
+        cells_marker.color.g = fv.color.g;
+        cells_marker.color.b = fv.color.b;
+        cells_marker.color.a = 0.1;
+
+        cells_marker.points.reserve(fv.cells.size());
+        for (auto &cell : fv.cells)
+        {
+          geometry_msgs::Point p;
+          p.x = cell.x();
+          p.y = cell.y();
+          p.z = cell.z();
+          cells_marker.points.push_back(p);
+        }
+        cells_msg.markers.push_back(std::move(cells_marker));
+      }
+
+      // frontiers that were displayed before but are no longer present in this snapshot: explicitly delete their marker
+      for (auto id : published_frontier_cell_ids_)
+      {
+        if (current_ids.count(id) > 0) {
+          continue;
+        }
+        visualization_msgs::Marker delete_marker;
+        delete_marker.header.frame_id = snapshot.frame_id;
+        delete_marker.header.stamp    = ros::Time::now();
+        delete_marker.ns              = "frontier_cells";
+        delete_marker.id              = static_cast<int32_t>(id);
+        delete_marker.action          = visualization_msgs::Marker::DELETE;
+        cells_msg.markers.push_back(std::move(delete_marker));
+      }
+
+      published_frontier_cell_ids_ = std::move(current_ids);
+
+      if (!cells_msg.markers.empty()) {
+        pub_frontier_cells_vis_.publish(cells_msg);
+      }
+
+      {
+        Eigen::Vector3d center((snapshot.zone.min.x() + snapshot.zone.max.x()) / 2.0, (snapshot.zone.min.y() + snapshot.zone.max.y()) / 2.0,
+                                (snapshot.zone.min.z() + snapshot.zone.max.z()) / 2.0);
+        Eigen::Vector3d           size(snapshot.zone.max.x() - snapshot.zone.min.x(), snapshot.zone.max.y() - snapshot.zone.min.y(),
+                            snapshot.zone.max.z() - snapshot.zone.min.z());
+        Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+        mrs_lib::geometry::Cuboid c(center, size, orientation);
+        bv_frontiers_->addCuboid(c, 1.0, 1.0, 1.0, 1.0, false);
+      }
+
+      // {
+      //   Eigen::Vector3d center((snapshot.tree_bbox.min.x() + snapshot.tree_bbox.max.x()) / 2.0,
+      //                           (snapshot.tree_bbox.min.y() + snapshot.tree_bbox.max.y()) / 2.0,
+      //                           (snapshot.tree_bbox.min.z() + snapshot.tree_bbox.max.z()) / 2.0);
+      //   Eigen::Vector3d           size(snapshot.tree_bbox.max.x() - snapshot.tree_bbox.min.x(), snapshot.tree_bbox.max.y() - snapshot.tree_bbox.min.y(),
+      //                       snapshot.tree_bbox.max.z() - snapshot.tree_bbox.min.z());
+      //   Eigen::Quaterniond        orientation = Eigen::Quaterniond::Identity();
+      //   mrs_lib::geometry::Cuboid c(center, size, orientation);
+      //   bv_frontiers_->addCuboid(c, 0.0, 0.6, 1.0, 0.15, true);
+      // }
+
+      bv_frontiers_->publish();
+      bv_frontiers_->clearBuffers();
+    }
+  }
+
+  void FrontierDetectorNodelet::retireTree(std::unique_ptr<OcTree_t> tree)
+  {
+    if (!tree) {
+      return;
+    }
+    {
+      std::scoped_lock lock(tree_cleanup_mutex_);
+      pending_tree_cleanup_.push_back(std::move(tree));
+    }
+    tree_cleanup_cv_.notify_one();
+  }
+
+  // runs on its own thread for the lifetime of the nodelet: destroys retired octrees here so the (potentially expensive,
+  // recursive) node-by-node teardown of a large OcTree never happens on the octomap-callback thread.
+  void FrontierDetectorNodelet::treeCleanupWorker()
+  {
+    while (true)
+    {
+      std::vector<std::unique_ptr<OcTree_t>> trees;
+      {
+        std::unique_lock lock(tree_cleanup_mutex_);
+        tree_cleanup_cv_.wait(lock, [this] { return tree_cleanup_shutdown_ || !pending_tree_cleanup_.empty(); });
+        if (tree_cleanup_shutdown_) {
+          return;
+        }
+        trees = std::move(pending_tree_cleanup_);
+      }
+      // trees actually destroyed here, outside the lock and off the octomap-callback thread
+    }
+  }
+
+  void FrontierDetectorNodelet::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr msg)
+  {
+    // only used for freshness checks via the SubscribeHandler, see getPosition()
+  }
+
+  void FrontierDetectorNodelet::timeoutOctomapLocal(const std::string& topic, const ros::Time& last_msg)
+  {
+    if (!is_initialized_ || !sh_octomap_local_.hasMsg()) {
+      return;
+    }
+    ROS_WARN_THROTTLE(1.0, "[FrontierDetectorNodelet]: local octomap timeout!");
+  }
+
+  void FrontierDetectorNodelet::timeoutTrackerCmd(const std::string& topic, const ros::Time& last_msg)
+  {
+    if (!is_initialized_ || !sh_tracker_cmd_.hasMsg()) {
+      return;
+    }
+    ROS_WARN_THROTTLE(1.0, "[FrontierDetectorNodelet]: position cmd timeouted!");
+  }
+
+  std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> FrontierDetectorNodelet::getPosition()
+  {
+    auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
+    return explorer_utils::getPosition(sh_control_manager_diag_, sh_tracker_cmd_, octree_frame, *transformer_, "[FrontierDetectorNodelet]");
+  }
+
+}
+
+#include <pluginlib/class_list_macros.h>
+PLUGINLIB_EXPORT_CLASS(frontier_detector::FrontierDetectorNodelet,
+                       nodelet::Nodelet)

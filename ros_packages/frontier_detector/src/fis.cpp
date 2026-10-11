@@ -1,0 +1,42 @@
+#include "frontier_detector/fis.hpp"
+
+
+namespace frontier_detector
+{
+
+
+// frontier information structure from FUEL paper
+FIS::FIS(){
+  valid_ = true;
+}
+
+// builds a FIS from a set of frontier cells: computes their centroid and bounding box, assigns the given id, starts with no viewpoints
+FIS::FIS(frontier_t cells, unsigned long id){
+  id_ = id;
+  center_ = mean(cells);
+  octomap::point3d min = getMinBound(cells);
+  octomap::point3d max = getMaxBound(cells);
+  bbx_ = {.min=min, .max=max};
+  cells_ = std::move(cells);
+  sample_cnt_ = 20;
+  viewpoints_ = std::vector<viewpoint_t>(0);
+  valid_ = true;
+}
+
+octomap::point3d FIS::sampleViewpoint(double r, double h)
+{
+  h = h*(explorer_utils::getRand()-0.5);
+  r = r*explorer_utils::getRand();
+  float theta = M_PI*explorer_utils::getRand();
+
+  return octomap::point3d(center_.x()+r*cos(theta),center_.y()+r*sin(theta), center_.z()+h);
+}
+
+unsigned int FIS::cellCnt()
+{
+  return cells_.size();
+}
+
+FIS::~FIS(){}
+
+} // namespace frontier_detector

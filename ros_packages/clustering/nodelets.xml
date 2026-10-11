@@ -1,0 +1,5 @@
+<library path="lib/libClustering">
+  <class name="clustering/Clustering" type="clustering::Clustering" base_class_type="nodelet::Nodelet">
+    <description>Tree-based clustering of exploration points around the UAV</description>
+  </class>
+</library>

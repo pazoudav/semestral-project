@@ -1,0 +1,35 @@
+<launch>
+
+  <!-- args corresponding to environment variables -->
+  <arg name="UAV_NAME" default="$(env UAV_NAME)" />
+  <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
+
+    <!-- other args -->
+  <arg name="standalone" default="false" />
+  <arg name="debug" default="false" />
+  <arg name="n_threads" default="16" />
+  <arg name="nodelet_manager_name" default="" />
+
+  <arg     if="$(arg debug)" name="launch_prefix" value="debug_roslaunch" />
+  <arg unless="$(arg debug)" name="launch_prefix" value="" />
+
+  <arg     if="$(arg LOGGER_DEBUG)" name="logger_debug_file" value="$(find mrs_uav_general)/config/logger_verbosity/debug_verbosity.conf" />
+  <arg unless="$(arg LOGGER_DEBUG)" name="logger_debug_file" value="" />
+
+  <env name="ROSCONSOLE_CONFIG_FILE" value="$(arg logger_debug_file)"/>
+  <!-- <env name="LD_PRELOAD" value="/usr/lib/x86_64-linux-gnu/libasan.so.5"/> -->
+
+  <!-- when debug is set, mapplan.launch's other includes each go standalone (their own gdb-wrapped process) instead of
+       loading into this manager, so there's nothing left for it to host - skip spawning an empty, wastefully gdb-wrapped manager -->
+  <group ns="$(arg UAV_NAME)" if="$(eval not arg('standalone') and not arg('debug'))">
+
+    <!-- Nodelet manager -->
+    <!-- required: a crash of the manager (e.g. octomap_server segfault) takes all its nodelets down, so roslaunch exits
+         instead of lingering, letting tmux/session.yml's restart loop relaunch the whole mapping stack -->
+    <node pkg="nodelet" type="nodelet" name="$(arg nodelet_manager_name)" args="manager" output="screen" launch-prefix="$(arg launch_prefix)" required="true">
+      <param name="num_worker_threads" value="$(arg n_threads)" />
+    </node>
+
+  </group>
+
+</launch>

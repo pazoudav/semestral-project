@@ -1,0 +1,15 @@
+# Radii of the clustering tree (see Params in clustering/node.hpp). Every radius is scaled by
+# growth_factor**scale of the node it belongs to.
+tree:
+  growth_factor: 1.5
+  expand_radius: 8.0
+  deflate_radius: 6.0     # keep <= expand_radius/growth_factor, else grow and shrink alternate every frame
+  break_radius: 2.0       # children farther than this are handed back to the parent
+  build_radius: 1.0       # siblings closer than this are merged
+  root_radius: 5.0        # additions and removals happen closer than 2*root_radius
+
+viz:
+  scale:
+    points: 0.15        # nodes below the root's children
+    root_points: 0.6    # the root's children, i.e. the clusters
+    lines: 0.03
