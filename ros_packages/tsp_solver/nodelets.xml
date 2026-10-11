@@ -1,5 +1,0 @@
-<library path="lib/libMrsTspSolver">
-  <class name="tsp_solver/Solver" type="tsp_solver::Solver" base_class_type="nodelet::Nodelet">
-    <description>MRS TSP solver nodelet</description>
-  </class>
-</library>
