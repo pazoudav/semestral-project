@@ -48,12 +48,12 @@ remaps used at runtime.
   frame-skip/re-entrancy gating, drives `Rosa` per incoming octomap cloud, and
   separately handles RANSAC-based alignment of a prerecorded source skeleton against
   the live ROSA output:
-  - `onInit()` — loads `RosaParams`/`world_frame_id` from config, wires up all subscribers/publishers.
-  - `callbackOctomapPoints()` — port of `ROSA_main::pointCloudCallback`: filters the incoming cloud, runs `Rosa::run()`, publishes the resulting skeleton.
+  - `onInit()` — loads `RosaParams`/`world_frame_id`/`min_z`/`alignment/{min,max}_height_ratio` from config and `zone_z` from the world's `world_info.yaml` (`world_info_file_config` launch arg), wires up all subscribers/publishers.
+  - `callbackOctomapPoints()` — port of `ROSA_main::pointCloudCallback`: drops incoming points below `min_z` (z-passthrough), runs `Rosa::run()`, publishes the resulting skeleton.
   - `publishInputCloud()` / `publishSkeleton()` — the two RViz-debug publishers reimplemented locally (originally via FC-Planner's `traj_utils::PlanningVisualization`).
-  - `sourceSkeletonCallback()` / `sourceViewpointsCallback()` / `targetSkeletonCallback()` — cache the prerecorded source skeleton/viewpoints and, on each new live skeleton, RANSAC-align the two and republish the transformed viewpoints/skeleton.
+  - `sourceSkeletonCallback()` / `sourceViewpointsCallback()` / `targetSkeletonCallback()` — cache the prerecorded source skeleton/viewpoints (deriving RANSAC scale bounds so the aligned skeleton's top lies within `[min,max]_height_ratio × zone_z`) and, on each new live skeleton, RANSAC-align the two and republish the transformed viewpoints/skeleton.
   - `loadSkeleton()` — resamples a LINE_LIST Marker's segments into a point cloud for RANSAC correspondence.
-  - `runRANSAC()` / `estimateTransform()` — RANSAC search (with a short history buffer for temporal smoothing) for the best-fit XY similarity transform (scale + rotation + translation) between source and target skeleton point sets.
+  - `runRANSAC()` / `estimateTransform()` — RANSAC search (each call's best joins a 10-entry history that is re-scored against the current target, sorted, worst dropped, best returned) for the best-fit XY similarity transform (scale + rotation + translation) between source and target skeleton point sets.
 
 - **`Rosa`** (`include/skeleton_estimator/rosa.hpp` + `src/rosa.cpp`) — pure,
   non-ROS class implementing the ROSA algorithm (port of `predrecon::ROSA_main`),
@@ -89,7 +89,7 @@ skeleton_estimator/
 ├── config/
 │   └── skeleton_estimator.yaml                # ROSA algorithm parameters (radius, num_drosa, k_KNN, alpha, ...)
 ├── launch/
-│   └── skeleton_estimator.launch               # standalone/managed nodelet launch, topic remaps, config loading
+│   └── skeleton_estimator.launch               # standalone/managed nodelet launch, topic remaps, config + world_info.yaml loading
 ├── include/skeleton_estimator/
 │   ├── rosa.hpp                                # Rosa class + RosaParams/SkeletonGraph, the ported ROSA_main pipeline
 │   ├── extra_del.hpp                            # ExtraDel: Eigen row/column extract/delete helpers

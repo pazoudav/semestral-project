@@ -6,14 +6,17 @@ attach: false
 tmux_options: -f /etc/ctu-mrs/tmux.conf
 # you can modify these
 pre_window: 'export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x500;
-            export WORLDS_DIR=$(cd .. && pwd)/worlds;
-            export PATH="$(cd .. && pwd)/scripts/bin:$PATH";
+            export PROJECT_DIR=$(cd .. && pwd);
+            export WORLDS_DIR=$PROJECT_DIR/worlds;
+            export PATH="$PROJECT_DIR/scripts/bin:$PATH";
             export GAZEBO_MODEL_PATH="$WORLDS_DIR${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}";
             export GAZEBO_RESOURCE_PATH="$WORLDS_DIR${GAZEBO_RESOURCE_PATH:+:$GAZEBO_RESOURCE_PATH}";
             ulimit -c unlimited;
-            SPAWN_POSITION=$(sed -n "s/^spawn_position: *\"\(.*\)\"/\1/p" "${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml")'
+            SPAWN_POSITION=$(sed -n "s/^spawn_position: *\"\(.*\)\"/\1/p" "${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml");
+            WORLD_TYPE=$(sed -n "s/^world_type: *\"\(.*\)\"/\1/p" "${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml");
+            SKELETON_DATA_DIR=$PROJECT_DIR/ros_packages/skeleton_estimator/data/$WORLD_TYPE'
 
-startup_window: mapplan
+startup_window: skeleton
 windows:
   - roscore:
       layout: tiled
@@ -77,20 +80,18 @@ windows:
       layout: tiled
       panes:
         # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
-        - waitForHw; roslaunch frontier_detector detector.launch bounds_file_config:=${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml
-        - waitForHw; roslaunch path_planner path_planner.launch bounds_file_config:=${WORLDS_DIR}/${WORLD_NAME}/bounds.yaml
+        - waitForHw; roslaunch frontier_detector detector.launch world_info_file_config:=${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml
+        - waitForHw; roslaunch path_planner path_planner.launch world_info_file_config:=${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml
         - waitForHw; roslaunch tsp_solver tsp_solver.launch 
         - waitForHw; roslaunch clustering clustering.launch
-  # - skeleton:
-  #     layout: tiled
-  #     panes:
-  #       - waitForGazebo; 
-  #         cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker;
-  #         cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
-  #       - waitForHw; roslaunch skeleton_estimator skeleton_estimator.launch
-  #       # - waitForGazebo; cat ~/user_ros_workspace/skeletons/turbine-skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker; 
-  #       #   cat ~/user_ros_workspace/skeletons/turbine-init-viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray;
-  #       # - waitForGazebo; roslaunch skeleton_estimator skeleton_estimator.launch
+  - skeleton:
+      layout: tiled
+      panes:
+        - waitForGazebo; 
+          cat ${SKELETON_DATA_DIR}/skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker;
+          cat ${SKELETON_DATA_DIR}/viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
+        - waitForHw; roslaunch skeleton_estimator skeleton_estimator.launch world_info_file_config:=${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml
+
         
   - rviz:
       layout: tiled

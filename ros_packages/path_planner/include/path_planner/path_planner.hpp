@@ -105,6 +105,10 @@ namespace path_planner
       // faster but allows the simplified path to graze obstacles more closely.
       std::vector<octomap::point3d> simplifyPath(const octomap::OcTree& octree, const std::vector<octomap::point3d>& path, bool use_raycast = false) const;
 
+      // single-segment version of simplifyPath's reachability test (same use_raycast semantics),
+      // with a fresh occupancy cache per call
+      bool segmentReachable(const octomap::OcTree& octree, const octomap::point3d& a, const octomap::point3d& b, bool use_raycast = false) const;
+
       const std::unordered_map<NodeId, RoadmapNode>& nodes() const
       {
         return nodes_;

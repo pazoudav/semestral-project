@@ -10,3 +10,11 @@ rosa:
   pt_downsample_size: 0.02    # initial voxel-grid downsample leaf size
   estimation_number: 10       # k-NN size for normal estimation
   ground: false                # synthesize a pseudo-ground point cloud beneath the input
+
+min_z: 0.2                    # input octomap points below this z are filtered out before ROSA
+
+# bounds on the aligned source skeleton's height, as multiples of world_info.yaml's zone_z
+# (converted to RANSAC scale limits once the source skeleton arrives)
+alignment:
+  min_height_ratio: 0.5
+  max_height_ratio: 2.0

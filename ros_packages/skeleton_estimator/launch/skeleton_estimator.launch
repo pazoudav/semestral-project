@@ -2,6 +2,8 @@
 
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
 
+  <arg name="world_info_file_config" default="" />
+
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
   <!-- other args -->
@@ -23,6 +25,7 @@
     <node pkg="nodelet" type="nodelet" name="skeleton_estimator" args="$(arg nodelet) skeleton_estimator/SkeletonEstimator $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
       <rosparam file="$(find skeleton_estimator)/config/skeleton_estimator.yaml" command="load" />
+      <rosparam file="$(arg world_info_file_config)" command="load" />
       <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" />
 
       <param name="world_frame_id" value="$(arg UAV_NAME)/world_origin" />

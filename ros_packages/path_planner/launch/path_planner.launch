@@ -2,7 +2,7 @@
 
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
 
-  <arg name="bounds_file_config" default="" />
+  <arg name="world_info_file_config" default="" />
 
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
@@ -25,7 +25,7 @@
     <node pkg="nodelet" type="nodelet" name="path_planner" args="$(arg nodelet) path_planner/PathPlannerNodelet $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
       <rosparam file="$(find path_planner)/config/path_planner.yaml" command="load" />
-      <rosparam file="$(arg bounds_file_config)" command="load" />
+      <rosparam file="$(arg world_info_file_config)" command="load" />
 
       <param name="uav_name" value="$(arg UAV_NAME)" />
 

@@ -91,6 +91,8 @@ private:
     std::string GlobalResultNoInit_ = GlobalDir_ + "solution_no_init.txt";
     std::string GlobalInitTour_ = GlobalDir_ + "initial_tour.txt";
     int         GlobalRuns_;
+    float       vp_weight_;
+    float       dir_weight_;
     double      GlobalTimeLimit_;
     int         precision_      = 10;
 
@@ -135,7 +137,7 @@ private:
 
 
 public:
-    TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs);
+    TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight);
     ~TSPsolver();
 
     // pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewpoints_;

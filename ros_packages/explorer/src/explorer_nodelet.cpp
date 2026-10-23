@@ -83,6 +83,9 @@ namespace explorer
     double _replan_request_cooldown_;
     double _stuck_distance_;
     double _stuck_duration_;
+    double _latency_compensation_;
+    double _latency_ema_alpha_;
+    double latency_estimate_; // discounted average of measured replan latency, seeded with _latency_compensation_; see pathAndTrajectory()
 
     struct Path_t
     {
@@ -179,6 +182,7 @@ namespace explorer
     std::optional<OcTreeSharedPtr_t>                                  msgToMap(const octomap_msgs::OctomapConstPtr octomap);
     bool                                                              makePath();
     bool  getCurrentStateAndPrediction(octomap::point3d& start_coord, mrs_msgs::MpcPredictionFullState& prediction, octomath::Vector3& velocity);
+    void  compensateLatency(const mrs_msgs::MpcPredictionFullState& prediction, octomap::point3d& start_coord, octomath::Vector3& velocity);
     bool  checkImminentCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
     bool  nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
     bool  checkStuck(const octomap::point3d& start_coord);
@@ -215,6 +219,8 @@ namespace explorer
     param_loader.loadParam("planning/replan_request_cooldown",_replan_request_cooldown_);
     param_loader.loadParam("planning/stuck_distance",_stuck_distance_);
     param_loader.loadParam("planning/stuck_duration",_stuck_duration_);
+    param_loader.loadParam("planning/latency_compensation",_latency_compensation_);
+    param_loader.loadParam("planning/latency_ema_alpha",_latency_ema_alpha_);
 
     param_loader.loadParam("prm/free_space_diameter",_free_space_dia_);
 
@@ -277,6 +283,8 @@ namespace explorer
     tsp_ready_ = false;
     first_path_planend_ = false;
     braking_ = false;
+
+    latency_estimate_ = _latency_compensation_;
 
     is_initialized_ = true;
     bv_map_frame_set_ = false;
@@ -406,7 +414,8 @@ namespace explorer
 
 
   // one full replan-and-publish cycle, run from callbackReplanRequest(): makePath() -> draw path_ (magenta) and flush bv_path_ (incl. the
-  // green TSP tour rays queued by visualizeGlobalPath()) -> makeTrajectory(path_) -> publishTrajectory(); returns true iff a trajectory was published
+  // green TSP tour rays queued by visualizeGlobalPath()) -> makeTrajectory(path_) -> publishTrajectory() -> folds the cycle's duration into
+  // latency_estimate_; returns true iff a trajectory was published
   bool Explorer::pathAndTrajectory()
   {
     if (!is_initialized_) {
@@ -450,12 +459,19 @@ namespace explorer
     // ROS_WARN("[MrsExplorer]: trajectory replan succesfull");
 
     ros::Duration dt = ros::Time::now() - t0;
-    ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: PATH update %.1fms", dt.toNSec()/1000000.0);
+
+    // state sampled in makePath() -> trajectory published is how far ahead the next replan should start (see compensateLatency())
+    if (_latency_compensation_ > 0.0)
+    {
+      latency_estimate_ = _latency_ema_alpha_*dt.toSec() + (1.0 - _latency_ema_alpha_)*latency_estimate_;
+    }
+
+    ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: PATH update %.1fms, latency estimate %.1fms", dt.toNSec()/1000000.0, latency_estimate_*1000.0);
     return true;
   }
 
-  // (re)plans path_ unconditionally (all gating happens in timerReplanner()): getCurrentStateAndPrediction() -> resets goal_/current_viewpoint_ to the
-  // current position -> solveTsp() for a fresh global viewpoint tour -> visualizeGlobalPath() -> buildLocalPath() (path_planner sub-paths to the next
+  // (re)plans path_ unconditionally (all gating happens in timerReplanner()): getCurrentStateAndPrediction() -> compensateLatency() moves the start
+  // ahead along the MPC prediction -> resets goal_/current_viewpoint_ to that start -> solveTsp() for a fresh global viewpoint tour -> visualizeGlobalPath() -> buildLocalPath() (path_planner sub-paths to the next
   // few tour viewpoints) -> finalizePath(); returns true iff path_ was updated
   bool Explorer::makePath()
   {
@@ -471,6 +487,9 @@ namespace explorer
       ROS_WARN("[MrsExplorer-Replanner]: cannot get state and prediction");
       return false;
     }
+
+    // the UAV keeps flying the old trajectory while this replan runs, so plan from where it will be by the time the new one takes over
+    compensateLatency(prediction, start_coord, velocity);
 
     // ROS_WARN("[MrsExplorer]: replanning");
     goal_ = start_coord;
@@ -789,6 +808,40 @@ namespace explorer
     return true;
   }
 
+  // advances start_coord/velocity along the MPC prediction by latency_estimate_ seconds (measured from the prediction's first
+  // stamp), stopping early at the last sample still in free space (a collision-triggered replan has a prediction running into an obstacle);
+  // leaves them untouched if compensation is disabled or the prediction is malformed
+  void Explorer::compensateLatency(const mrs_msgs::MpcPredictionFullState& prediction, octomap::point3d& start_coord, octomath::Vector3& velocity)
+  {
+    const std::size_t n = prediction.position.size();
+    if (_latency_compensation_ <= 0.0 || n == 0 || prediction.stamps.size() != n || prediction.velocity.size() != n)
+    {
+      return;
+    }
+
+    std::scoped_lock lock(mutex_octree_);
+    if (!octree_)
+    {
+      return;
+    }
+
+    const ros::Time t0 = prediction.stamps[0];
+    for (std::size_t k = 1; k < n; k++)
+    {
+      const octomap::point3d p(prediction.position[k].x, prediction.position[k].y, prediction.position[k].z);
+      if (!explorer_utils::isFreeSpace(p, _flight_free_distance_, *octree_))
+      {
+        break;
+      }
+      start_coord = p;
+      velocity    = octomath::Vector3(prediction.velocity[k].x, prediction.velocity[k].y, prediction.velocity[k].z);
+      if ((prediction.stamps[k] - t0).toSec() >= latency_estimate_)
+      {
+        break;
+      }
+    }
+  }
+
   // tracker's full-state MPC prediction (in the octree frame), delegating to explorer_utils::getFullStatePrediction using the tracker_cmd/diagnostics subscribers
   std::optional<mrs_msgs::MpcPredictionFullState> Explorer::getFullStatePrediction()
   {
@@ -920,16 +973,14 @@ namespace explorer
   }
 
 
-// diagnostics_in callback; currently a no-op besides the init guard (only feeds sh_control_manager_diag_'s own freshness checks used elsewhere via hasMsg()/lastMsgTime())
-void Explorer::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr diagnostics)
-{
-  if (!is_initialized_){
-      return;
+  // diagnostics_in callback; currently a no-op besides the init guard (only feeds sh_control_manager_diag_'s own freshness checks used elsewhere via hasMsg()/lastMsgTime())
+  void Explorer::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnostics::ConstPtr diagnostics)
+  {
+    if (!is_initialized_){
+        return;
+    }
   }
-}
 
-
-}
   // queues the freshly solved global TSP tour as green debug rays on bv_path_ (published later, together with path_, by pathAndTrajectory())
   void Explorer::visualizeGlobalPath(const std::vector<octomap::point3d>& glob_path)
   {
@@ -945,6 +996,10 @@ void Explorer::controlManagerDiagCallback(const mrs_msgs::ControlManagerDiagnost
     }
   }
 
+
+
+}
+  
 
 #include <pluginlib/class_list_macros.h>
 PLUGINLIB_EXPORT_CLASS(explorer::Explorer,

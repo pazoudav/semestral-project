@@ -3,7 +3,7 @@
 # external workspace-level worlds/, models/ply/ and models/dae/ dirs into
 # this repo's own worlds/<name>/, rewrites the copied .world's mesh <uri> to
 # a relative path resolved via GAZEBO_MODEL_PATH (see run.sh), and generates
-# bounds.yaml for any world that doesn't already have one cached.
+# world_info.yaml for any world that doesn't already have one cached.
 set -e
 
 SCRIPT=$(readlink -f "$0")
@@ -47,9 +47,17 @@ for world_file in "$SRC_WORLDS_DIR"/*.world; do
         echo "warning: no .dae for '$name' at $dae_file" >&2
     fi
 
-    bounds_file="$dest_dir/bounds.yaml"
-    if [ ! -f "$bounds_file" ]; then
-        "$WORLDBOUNDS_VENV/bin/python3" "$WORLDBOUNDS_DIR/worldbounds.py" "$dest_dir/$name.ply" > "$bounds_file"
+    # world_type is taken from the name prefix (e.g. turbine-40-15 -> turbine)
+    case "$name" in
+        turbine-*) world_type=turbine ;;
+        pylon-*)   world_type=pylon ;;
+        bridge-*)  world_type=bridge ;;
+        *)         world_type=""; echo "warning: can't infer world_type for '$name', set it in world_info.yaml by hand" >&2 ;;
+    esac
+
+    info_file="$dest_dir/world_info.yaml"
+    if [ ! -f "$info_file" ]; then
+        "$WORLDBOUNDS_VENV/bin/python3" "$WORLDBOUNDS_DIR/worldbounds.py" "$dest_dir/$name.ply" $world_type > "$info_file"
     fi
 
     echo "$name: ok"

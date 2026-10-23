@@ -26,10 +26,10 @@ global_map:
   size: 200 # [m]
 
   # should create a global map from the local map?
-  enabled: false
+  enabled: true
 
   # the publisher rate of the global map
-  publisher_rate: 2.0 # [Hz]
+  publisher_rate: 1.0 # [Hz]
 
   # the rate of inserting the local map into the global map
   creation_rate: 2.0 # [Hz]

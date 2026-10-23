@@ -27,6 +27,7 @@
 #include <pcl/common/transforms.h>
 
 #include <algorithm>
+#include <limits>
 #include <random>
 
 struct trans_cost_t
@@ -50,6 +51,16 @@ private:
 
   Rosa        rosa_;
   std::string world_frame_id_;
+  double      min_z_;  // input points with z below this are dropped before ROSA
+
+  /* the transformed source skeleton's height (scale * source top z) must stay within
+   * [min_height_ratio_, max_height_ratio_] * zone_z_; min_scale_/max_scale_ are those
+   * limits converted to RANSAC scale bounds, recomputed whenever a source skeleton arrives */
+  double zone_z_;
+  double min_height_ratio_;
+  double max_height_ratio_;
+  float  min_scale_ = 0.1;
+  float  max_scale_ = 10.0;
 
   /* mirrors ROSA_main's skip_/in_progess_: skip_ halves the effective input
    * rate (process every 2nd cloud), in_progress_ guards against re-entrant
@@ -117,6 +128,10 @@ void SkeletonEstimator::onInit()
   param_loader.loadParam("rosa/estimation_number", rosa_params.estimation_number);
   param_loader.loadParam("rosa/ground", rosa_params.ground);
   param_loader.loadParam("world_frame_id", world_frame_id_);
+  param_loader.loadParam("min_z", min_z_);
+  param_loader.loadParam("zone_z", zone_z_);
+  param_loader.loadParam("alignment/min_height_ratio", min_height_ratio_);
+  param_loader.loadParam("alignment/max_height_ratio", max_height_ratio_);
 
   if (!param_loader.loadedSuccessfully()) {
     ROS_ERROR("[SkeletonEstimator]: could not load all parameters");
@@ -158,7 +173,7 @@ void SkeletonEstimator::onInit()
 }
 
 /* Octomap point-cloud callback (port of ROSA_main::pointCloudCallback): gates
- * re-entrant calls, z-passthrough filters the cloud, publishes it for debug, then
+ * re-entrant calls, drops points below min_z_, publishes it for debug, then
  * runs the full Rosa pipeline on it and publishes the resulting skeleton. */
 void SkeletonEstimator::callbackOctomapPoints(const sensor_msgs::PointCloud2::ConstPtr msg)
 {
@@ -181,7 +196,7 @@ void SkeletonEstimator::callbackOctomapPoints(const sensor_msgs::PointCloud2::Co
   pcl::PassThrough<pcl::PointXYZ> pass;
   pass.setInputCloud(cloud);
   pass.setFilterFieldName("z");
-  pass.setFilterLimits(0.0, 1000000.0);
+  pass.setFilterLimits(min_z_, 1000000.0);
   pass.filter(*cloud);
 
   publishInputCloud(*cloud);
@@ -290,8 +305,8 @@ void SkeletonEstimator::publishSkeleton(const SkeletonGraph& graph)
 }
 
 /* Parses a prerecorded viewpoint MarkerArray (markers namespaced "init_vps_pos"/"text",
- * whose position needs de-/re-scaling by the marker's own scale to recover world
- * coordinates) into source_viewpoint_candidates_, used later by targetSkeletonCallback. */
+ * whose position is used directly as world coordinates, ignoring the marker's scale)
+ * into source_viewpoint_candidates_, used later by targetSkeletonCallback. */
 void SkeletonEstimator::sourceViewpointsCallback(const visualization_msgs::MarkerArray::ConstPtr msg)
 {
   source_viewpoint_candidates_->clear();
@@ -301,22 +316,10 @@ void SkeletonEstimator::sourceViewpointsCallback(const visualization_msgs::Marke
     {
       continue;
     }
-    auto p = p_.pose.position;
-    auto scale = p_.scale;
-    double x;
-    double y;
-    double z;
-    if (p_.ns == "init_vps_pos")
-    {
-      x = p.x*1.0/scale.x;
-      y = p.y*1.0/scale.y;
-      z = p.z*1.0/scale.z;
-    } else {
-      x = p.x*scale.x;
-      y = p.y*scale.y;
-      z = p.z*scale.z;
-    }
-
+    // the marker's own scale is ignored; its position is taken as world coordinates directly
+    double x = p_.pose.position.x;
+    double y = p_.pose.position.y;
+    double z = p_.pose.position.z;
 
     ROS_INFO("Viewpoint Point: x=%.2f, y=%.2f, z=%.2f", x, y, z);
     source_viewpoint_candidates_->push_back(pcl::PointXYZ(x, y, z));
@@ -333,6 +336,20 @@ void SkeletonEstimator::sourceSkeletonCallback(const visualization_msgs::Marker:
   og_skeleton_msg_ = msg->points;
   skeleton_kdtree_->setInputCloud(source_cloud_);
   ROS_INFO("[SkeletonEstimator]: source skeleton received, %zu points", source_cloud_->size());
+
+  // z is scaled about 0 and never translated, so the transformed top is scale * source top
+  float source_top = -std::numeric_limits<float>::infinity();
+  for (const auto& p : og_skeleton_msg_) {
+    source_top = std::max(source_top, (float)p.z);
+  }
+
+  if (source_top > 0.0f) {
+    min_scale_ = min_height_ratio_ * zone_z_ / source_top;
+    max_scale_ = max_height_ratio_ * zone_z_ / source_top;
+    ROS_INFO("[SkeletonEstimator]: source top z %.2f, scale bounds [%.3f, %.3f]", source_top, min_scale_, max_scale_);
+  } else {
+    ROS_WARN("[SkeletonEstimator]: source skeleton top z %.2f <= 0, keeping scale bounds [%.3f, %.3f]", source_top, min_scale_, max_scale_);
+  }
 }
 
 /* On a new (live, ROSA-produced) target skeleton: RANSAC-aligns it against the cached
@@ -448,9 +465,9 @@ void SkeletonEstimator::loadSkeleton(const visualization_msgs::Marker::ConstPtr 
 /* RANSAC search for the similarity transform T (source cs -> target ct) that best
  * aligns the two skeletons: repeatedly samples 3 correspondences, fits a candidate
  * transform via estimateTransform, and scores its inverse by nearest-neighbor
- * distance of the transformed target against the source KD-tree. Keeps a short
- * history of recent best transforms (tranfomation_history_) and re-scores across
- * that history to damp frame-to-frame jitter before returning the overall best T. */
+ * distance of the transformed target against the source KD-tree. Adds this call's
+ * best to tranfomation_history_, re-scores every kept transform against the current
+ * target, sorts by that cost, drops the worst once over 10 entries, and returns the best. */
 Eigen::Matrix4f SkeletonEstimator::runRANSAC(
     pcl::PointCloud<pcl::PointXYZ>::Ptr cs,
     pcl::PointCloud<pcl::PointXYZ>::Ptr ct,
@@ -473,7 +490,9 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
         std::vector<Eigen::Vector3f> src, tgt;
         std::vector<int>             used_idx;
 
-        for (int k = 0; k < 3; ++k) {
+        // redraw on an empty/duplicate source index instead of wasting the iteration
+        // (capped so a tiny source cloud can't spin forever)
+        for (int attempt = 0; src.size() < 3 && attempt < 30; ++attempt) {
             int i = dist(rng_);
             if (candidates[i].empty()) continue;
             if (std::find(used_idx.begin(), used_idx.end(), i) != used_idx.end()) continue;
@@ -490,15 +509,18 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
 
         Eigen::Matrix4f T = estimateTransform(src, tgt);
 
-        float scale = T(0,0);
-        if (scale < 0.1 || scale > 10.0) continue;
         if (!T.allFinite()) continue;
 
-        Eigen::Matrix4f inv_T = Eigen::Matrix4f::Identity();
-        Eigen::Matrix3f R_T   = T.block<3,3>(0,0).transpose();
-        R_T = R_T/scale;
-        inv_T.block<3,3>(0,0) = R_T/scale;
-        inv_T.block<3,1>(0,3) = -R_T * T.block<3,1>(0,3);
+        // T's 3x3 block is scale*R (R a rotation about Z), so T(2,2) is the pure scale;
+        // T(0,0) would be scale*cos(yaw) and reject every yaw >= 90 deg
+        float scale = T(2,2);
+        if (scale < min_scale_ || scale > max_scale_) continue;
+
+        // inverse of x -> s*R*x + t is x -> (R^T/s)*x - (R^T/s)*t, and (s*R)^T/s^2 = R^T/s
+        Eigen::Matrix4f inv_T   = Eigen::Matrix4f::Identity();
+        Eigen::Matrix3f inv_sR  = T.block<3,3>(0,0).transpose() / (scale * scale);
+        inv_T.block<3,3>(0,0) = inv_sR;
+        inv_T.block<3,1>(0,3) = -inv_sR * T.block<3,1>(0,3);
 
         transformed_pointcloud->clear();
         pcl::transformPointCloud(*ct, *transformed_pointcloud, inv_T);
@@ -523,40 +545,46 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
 
 
 
-    if (tranfomation_history_.size() < 10)
+    // always add this call's best (skipped only if RANSAC found no valid transform at all)
+    if (best_score < 100000000.0)
     {
       tranfomation_history_.push_back((trans_cost_t){.matrix=bestT, .matrix_inv=bestT_inv, .cost=best_score});
-    }else{
-
-      tranfomation_history_.insert(tranfomation_history_.begin(), (trans_cost_t){.matrix=bestT, .matrix_inv=bestT_inv, .cost=best_score});
-      tranfomation_history_.pop_back();
     }
 
-    best_score = 1000000000.0;
-    for (auto tc : tranfomation_history_)
+    if (tranfomation_history_.empty())
+    {
+      return Eigen::Matrix4f::Identity();
+    }
+
+    // re-score every kept transform against the current target, since older costs were
+    // computed against an older (smaller) skeleton and aren't comparable
+    for (auto& tc : tranfomation_history_)
     {
       transformed_pointcloud->clear();
       pcl::transformPointCloud(*ct, *transformed_pointcloud, tc.matrix_inv);
 
-      float score = 0;
+      tc.cost = 0;
 
       for (const auto& point : transformed_pointcloud->points) {
         if (skeleton_kdtree_->nearestKSearch(point, 1, idx, tree_dist) > 0)
         {
-          score += tree_dist[0];
+          tc.cost += tree_dist[0];
         }
-      }
-
-      if (score < best_score)
-      {
-        best_score = score;
-        bestT = tc.matrix;
       }
     }
 
-    ROS_WARN("best score %f", best_score);
+    std::sort(tranfomation_history_.begin(), tranfomation_history_.end(),
+              [](const trans_cost_t& a, const trans_cost_t& b) { return a.cost < b.cost; });
 
-    return bestT;
+    // discard the worst fit once over capacity
+    if (tranfomation_history_.size() > 10)
+    {
+      tranfomation_history_.pop_back();
+    }
+
+    ROS_WARN("best score %f", tranfomation_history_.front().cost);
+
+    return tranfomation_history_.front().matrix;
 
 }
 

@@ -9,11 +9,13 @@ namespace tsp_solver
   unsigned long START_ID = 0;
 
   // Initializes the fallback-solver time budget (nanoseconds) and default state: a single dummy start node, plus the client used to query real (roadmap) distances.
-  TSPsolver::TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs)
+  TSPsolver::TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight)
 {
   duration_ = ros::Duration(0, max_duration);
   GlobalTimeLimit_ = lkh_time_limit;
   GlobalRuns_ = lkh_runs;
+  vp_weight_ = vp_weight;
+  dir_weight_ = dir_weight;
   ensureCapacity(32);
   sc_find_simplified_path_ = mrs_lib::ServiceClientHandler<path_planner::FindSimplifiedPath>(nh, "find_simplified_path_out");
   tree_ = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>();
@@ -326,10 +328,8 @@ void TSPsolver::constructDistanceMatrix()
   isAccesible_.clear();
   isAccesible_.reserve(size);
 
-  float vp_weight = 0.7;
-  float dir_weight = 4.0;
-  (void)vp_weight;
-  (void)dir_weight;
+  // (void)vp_weight;
+  // (void)dir_weight;
 
   for (int i=0; i<size; i++)
   {
@@ -341,9 +341,9 @@ void TSPsolver::constructDistanceMatrix()
     // {
     //   pcl::PointXYZ point = pcl::PointXYZ(nodes_[i].position.x(), nodes_[i].position.y(), nodes_[i].position.z());
     //   if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
-    //     cost_matrix_(0, i) += vp_weight*dist[0];
+    //     cost_matrix_(0, i) += vp_weight_*dist[0];
     // }
-    // cost_matrix_(0, i) += dir_weight*std::acos(start_velocity_.normalized().dot((nodes_[i].position - start_position).normalized()));
+    cost_matrix_(0, i) += dir_weight_*std::acos(start_velocity_.normalized().dot((nodes_[i].position - start_position).normalized()));
 
     // START_ID is always index 0 (see reserveStartSlot()), so this is the zero-cost "return to start"
     // column the ATSP formulation relies on to let LKH produce an open (rather than closed) tour.

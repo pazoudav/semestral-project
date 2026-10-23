@@ -158,6 +158,15 @@ namespace path_planner
     return simplified;
   }
 
+  bool PathPlanner::segmentReachable(const octomap::OcTree& octree, const octomap::point3d& a, const octomap::point3d& b, bool use_raycast) const
+  {
+    if (use_raycast) {
+      return collisionFree(octree, a, b);
+    }
+    octomap::KeyBoolMap clearance_cache;
+    return segmentHasClearance(octree, a, b, params_.min_obstacle_clearance, clearance_cache);
+  }
+
   void PathPlanner::removeInvalidNodes(const octomap::OcTree& octree, const std::vector<NodeId>& dirty_nodes, std::vector<NodeId>& affected)
   {
     for (const NodeId id : dirty_nodes) {

@@ -36,6 +36,8 @@ namespace tsp_solver
       int    _max_duration_;
       double _lkh_time_limit_;
       int    _lkh_runs_;
+      float  _vp_weight_;
+      float  _dir_weight_;
 
       std::unique_ptr<TSPsolver> tsp_solver_;
 
@@ -68,13 +70,15 @@ namespace tsp_solver
     param_loader.loadParam("tsp/max_duration", _max_duration_);
     param_loader.loadParam("tsp/lkh_time_limit", _lkh_time_limit_);
     param_loader.loadParam("tsp/lkh_runs", _lkh_runs_);
+    param_loader.loadParam("tsp/vp_weight", _vp_weight_);
+    param_loader.loadParam("tsp/dir_weight", _dir_weight_);
 
     if (!param_loader.loadedSuccessfully()) {
       ROS_ERROR("[Solver]: Could not load all parameters");
       ros::shutdown();
     }
 
-    tsp_solver_ = std::make_unique<TSPsolver>(_max_duration_, nh_, _lkh_time_limit_, _lkh_runs_);
+    tsp_solver_ = std::make_unique<TSPsolver>(_max_duration_, nh_, _lkh_time_limit_, _lkh_runs_, _vp_weight_, _dir_weight_);
 
     mrs_lib::SubscribeHandlerOptions shopts;
     shopts.nh                 = nh_;

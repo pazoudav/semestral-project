@@ -35,8 +35,8 @@ if [ -z "$WORLD_NAME" ]; then
   echo "usage: $0 [-n max_runs] <world_name> [motion_watchdog.py args...]" >&2
   exit 1
 fi
-if [ ! -f "$REPO_DIR/worlds/$WORLD_NAME/bounds.yaml" ]; then
-  echo "world '$WORLD_NAME' has no worlds/$WORLD_NAME/bounds.yaml" >&2
+if [ ! -f "$REPO_DIR/worlds/$WORLD_NAME/world_info.yaml" ]; then
+  echo "world '$WORLD_NAME' has no worlds/$WORLD_NAME/world_info.yaml" >&2
   exit 1
 fi
 

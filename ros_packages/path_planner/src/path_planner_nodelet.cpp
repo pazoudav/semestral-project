@@ -63,6 +63,9 @@ namespace path_planner
       bool        is_initialized_ = false;
       std::string _uav_name_;
 
+      // below this distance a requested start/goal is treated as coinciding with its snapped path endpoint
+      static constexpr double kSamePointEps = 1e-3;
+
       // params
       double _flight_zone_width_x_;
       double _flight_zone_width_y_;
@@ -411,10 +414,20 @@ namespace path_planner
         continue; // unreachable from start
       }
 
+      // the real start is prepended so simplifyPath can shortcut past the snapped start node
+      // (which may lie behind the UAV); the real goal is appended only if reachable from the last node
       std::vector<octomap::point3d> raw_path;
-      raw_path.reserve(result_it->second.path.size());
+      raw_path.reserve(result_it->second.path.size() + 2);
+      if (start.distance(nodes.at(*start_id).position) > kSamePointEps) {
+        raw_path.push_back(start);
+      }
       for (const NodeId id : result_it->second.path) {
         raw_path.push_back(nodes.at(id).position);
+      }
+      const octomap::point3d goal(req.goals[i].x, req.goals[i].y, req.goals[i].z);
+      if (goal.distance(raw_path.back()) > kSamePointEps &&
+          (octree_ && path_planner_->segmentReachable(*octree_, raw_path.back(), goal, req.use_raycast))) {
+        raw_path.push_back(goal);
       }
 
       const std::vector<octomap::point3d> simplified_path = octree_ ? path_planner_->simplifyPath(*octree_, raw_path, req.use_raycast) : raw_path;
