@@ -29,7 +29,7 @@ remaps used at runtime.
 | `~octomap_points_in` | `octomap_global_vis/octomap_point_cloud_centers` | `sensor_msgs/PointCloud2` | Live octomap point cloud; triggers the ROSA pipeline. |
 | `~source_skeleton_in` | `/source_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | Prerecorded "source" skeleton, replayed manually (see `tmux/session.yml`, outside this package), used as the RANSAC alignment reference. |
 | `~target_skeleton_in` | `~/extracted_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The live skeleton this node itself just published on `~skeleton_lines_out`; triggers RANSAC alignment against the source skeleton. |
-| `~source_viewpoints_in` | `/source_viewpoints` | `visualization_msgs/MarkerArray` | Prerecorded candidate viewpoints associated with the source skeleton. |
+| `~source_viewpoints_in` | `/source_viewpoints` | `visualization_msgs/MarkerArray` | Prerecorded candidate viewpoints associated with the source skeleton. Each `init_vps_pos` marker's position is the viewpoint and its `pose.orientation` encodes the surface normal (`normal = orientation * UnitX`, pointing from the surface toward the viewpoint; the viewpoint looks along `-normal`). Data is produced by `scripts/sample_surface.py` + `scripts/ply_to_marker_array.py`, sampled on the surface (`--offset 0`). |
 
 ### Published
 
@@ -40,7 +40,7 @@ remaps used at runtime.
 | `~skeleton_lines_out` | `~/extracted_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The ROSA skeleton edges — the main output. This is the absolute topic `explorer`'s `Explorer::targetSkeletonCallback` listens to as `target_skeleton_in`, and this node's own `~target_skeleton_in` also loops back through it. |
 | `~skeleton_vertex_ids_out` | `~/skeleton_vertex_ids` | `visualization_msgs/MarkerArray` (TEXT_VIEW_FACING) | Debug: per-vertex ID text markers, reimplemented locally instead of depending on FC-Planner's `traj_utils::PlanningVisualization`. |
 | `~transformed_skeleton_out` | `~/transformed_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The source skeleton's line points, transformed by the RANSAC alignment `T` into the target/live frame. |
-| `~candidate_viewpoints_out` | `~/candidate_viewpoints` | `sensor_msgs/PointCloud2` | The source's candidate viewpoints, transformed by `T` into the live frame — feeds `tsp_solver`'s `~candidate_viewpoints_in` (remapped to `skeleton_estimator/candidate_viewpoints`), though that callback currently returns immediately without consuming it. |
+| `~candidate_viewpoints_out` | `~/candidate_viewpoints` | `sensor_msgs/PointCloud2` (PointNormal: x y z normal_x normal_y normal_z curvature) | The source's candidate viewpoints, transformed by `T` into the live frame (normals rotated and renormalized), then shifted `alignment/viewpoint_offset` meters along their normals; only the shifted points are published — feeds `tsp_solver`'s `~candidate_viewpoints_in` (remapped to `skeleton_estimator/candidate_viewpoints`), though that callback currently returns immediately without consuming it. |
 
 ## Important functions/classes
 
@@ -48,10 +48,10 @@ remaps used at runtime.
   frame-skip/re-entrancy gating, drives `Rosa` per incoming octomap cloud, and
   separately handles RANSAC-based alignment of a prerecorded source skeleton against
   the live ROSA output:
-  - `onInit()` — loads `RosaParams`/`world_frame_id`/`min_z`/`alignment/{min,max}_height_ratio` from config and `zone_z` from the world's `world_info.yaml` (`world_info_file_config` launch arg), wires up all subscribers/publishers.
+  - `onInit()` — loads `RosaParams`/`world_frame_id`/`min_z`/`alignment/{min,max}_height_ratio`/`alignment/viewpoint_offset` (stand-off distance in meters, independent of RANSAC scale) from config and `zone_z` from the world's `world_info.yaml` (`world_info_file_config` launch arg), wires up all subscribers/publishers.
   - `callbackOctomapPoints()` — port of `ROSA_main::pointCloudCallback`: drops incoming points below `min_z` (z-passthrough), runs `Rosa::run()`, publishes the resulting skeleton.
   - `publishInputCloud()` / `publishSkeleton()` — the two RViz-debug publishers reimplemented locally (originally via FC-Planner's `traj_utils::PlanningVisualization`).
-  - `sourceSkeletonCallback()` / `sourceViewpointsCallback()` / `targetSkeletonCallback()` — cache the prerecorded source skeleton/viewpoints (deriving RANSAC scale bounds so the aligned skeleton's top lies within `[min,max]_height_ratio × zone_z`) and, on each new live skeleton, RANSAC-align the two and republish the transformed viewpoints/skeleton.
+  - `sourceSkeletonCallback()` / `sourceViewpointsCallback()` / `targetSkeletonCallback()` — cache the prerecorded source skeleton/viewpoints (viewpoints stored as `pcl::PointNormal`, normal taken from the marker orientation; deriving RANSAC scale bounds so the aligned skeleton's top lies within `[min,max]_height_ratio × zone_z`) and, on each new live skeleton, RANSAC-align the two and republish the transformed viewpoints (via `pcl::transformPointCloudWithNormals`, normals renormalized, then offset along the normal)/skeleton.
   - `loadSkeleton()` — resamples a LINE_LIST Marker's segments into a point cloud for RANSAC correspondence.
   - `runRANSAC()` / `estimateTransform()` — RANSAC search (each call's best joins a 10-entry history that is re-scored against the current target, sorted, worst dropped, best returned) for the best-fit XY similarity transform (scale + rotation + translation) between source and target skeleton point sets.
 

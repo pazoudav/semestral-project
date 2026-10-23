@@ -26,6 +26,8 @@
 #include <pcl/filters/passthrough.h>
 #include <pcl/common/transforms.h>
 
+#include <Eigen/Geometry>
+
 #include <algorithm>
 #include <limits>
 #include <random>
@@ -62,6 +64,9 @@ private:
   float  min_scale_ = 0.1;
   float  max_scale_ = 10.0;
 
+  // transformed viewpoints are shifted this far [m] along their (rotated) normals before publishing
+  double viewpoint_offset_;
+
   /* mirrors ROSA_main's skip_/in_progess_: skip_ halves the effective input
    * rate (process every 2nd cloud), in_progress_ guards against re-entrant
    * calls while a run is in flight */
@@ -84,7 +89,7 @@ private:
   pcl::PointCloud<pcl::PointXYZ>::Ptr  source_cloud_;
   pcl::PointCloud<pcl::PointXYZ>::Ptr  target_cloud_;
   std::vector<geometry_msgs::Point>    og_skeleton_msg_;
-  pcl::PointCloud<pcl::PointXYZ>::Ptr  source_viewpoint_candidates_;
+  pcl::PointCloud<pcl::PointNormal>::Ptr source_viewpoint_candidates_;
   pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr skeleton_kdtree_;
   std::vector<trans_cost_t>            tranfomation_history_;
   std::mt19937                         rng_{std::random_device{}()};
@@ -132,6 +137,7 @@ void SkeletonEstimator::onInit()
   param_loader.loadParam("zone_z", zone_z_);
   param_loader.loadParam("alignment/min_height_ratio", min_height_ratio_);
   param_loader.loadParam("alignment/max_height_ratio", max_height_ratio_);
+  param_loader.loadParam("alignment/viewpoint_offset", viewpoint_offset_);
 
   if (!param_loader.loadedSuccessfully()) {
     ROS_ERROR("[SkeletonEstimator]: could not load all parameters");
@@ -164,7 +170,7 @@ void SkeletonEstimator::onInit()
   source_cloud_                = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();
   target_cloud_                = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();
   skeleton_kdtree_             = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>();
-  source_viewpoint_candidates_ = std::make_unique<pcl::PointCloud<pcl::PointXYZ>>();
+  source_viewpoint_candidates_ = std::make_unique<pcl::PointCloud<pcl::PointNormal>>();
   tranfomation_history_        = std::vector<trans_cost_t>(0);
 
   is_initialized_ = true;
@@ -306,7 +312,9 @@ void SkeletonEstimator::publishSkeleton(const SkeletonGraph& graph)
 
 /* Parses a prerecorded viewpoint MarkerArray (markers namespaced "init_vps_pos"/"text",
  * whose position is used directly as world coordinates, ignoring the marker's scale)
- * into source_viewpoint_candidates_, used later by targetSkeletonCallback. */
+ * into source_viewpoint_candidates_, used later by targetSkeletonCallback. Each marker's
+ * orientation encodes the viewpoint's surface normal as the rotation taking +x onto it
+ * (see scripts/ply_to_marker_array.py); the viewpoint looks along -normal. */
 void SkeletonEstimator::sourceViewpointsCallback(const visualization_msgs::MarkerArray::ConstPtr msg)
 {
   source_viewpoint_candidates_->clear();
@@ -321,8 +329,14 @@ void SkeletonEstimator::sourceViewpointsCallback(const visualization_msgs::Marke
     double y = p_.pose.position.y;
     double z = p_.pose.position.z;
 
-    ROS_INFO("Viewpoint Point: x=%.2f, y=%.2f, z=%.2f", x, y, z);
-    source_viewpoint_candidates_->push_back(pcl::PointXYZ(x, y, z));
+    const auto&           o = p_.pose.orientation;
+    const Eigen::Vector3d n = Eigen::Quaterniond(o.w, o.x, o.y, o.z).normalized() * Eigen::Vector3d::UnitX();
+
+    ROS_INFO("Viewpoint Point: x=%.2f, y=%.2f, z=%.2f, normal=(%.2f, %.2f, %.2f)", x, y, z, n.x(), n.y(), n.z());
+    pcl::PointNormal vp;
+    vp.getVector3fMap()       = Eigen::Vector3f(x, y, z);
+    vp.getNormalVector3fMap() = n.cast<float>();
+    source_viewpoint_candidates_->push_back(vp);
   }
 }
 
@@ -353,8 +367,9 @@ void SkeletonEstimator::sourceSkeletonCallback(const visualization_msgs::Marker:
 }
 
 /* On a new (live, ROSA-produced) target skeleton: RANSAC-aligns it against the cached
- * source skeleton, transforms the source's candidate viewpoints and skeleton lines by
- * the resulting T, and publishes both (candidate_viewpoints_out / transformed_skeleton_out). */
+ * source skeleton, transforms the source's candidate viewpoints (with their normals) and
+ * skeleton lines by the resulting T, shifts the viewpoints viewpoint_offset_ along their
+ * normals, and publishes both (candidate_viewpoints_out / transformed_skeleton_out). */
 void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker::ConstPtr msg)
 {
 
@@ -369,11 +384,19 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
     return;
   }
 
+  ros::WallTime t_checkpoint = ros::WallTime::now();
+  ros::WallTime t_total      = ros::WallTime::now();
+
   loadSkeleton(msg, target_cloud_);
   if (target_cloud_->empty())
   {
+    ROS_INFO("[SkeletonEstimator]: align total     %4.3fms, (empty target skeleton)", 1000 * (ros::WallTime::now() - t_total).toSec());
+    ROS_INFO("[SkeletonEstimator]: ---------------------------");
     return;
   }
+
+  ROS_INFO("[SkeletonEstimator]: load target     %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  t_checkpoint = ros::WallTime::now();
 
   std::vector<std::vector<int>> candidates = std::vector<std::vector<int>>(0);
 
@@ -384,16 +407,32 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
     }
   }
 
+  ROS_INFO("[SkeletonEstimator]: candidates      %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  t_checkpoint = ros::WallTime::now();
+
   Eigen::Matrix4f T = runRANSAC(source_cloud_, target_cloud_, candidates, 2000);
 
-  pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_pointcloud(new pcl::PointCloud<pcl::PointXYZ>());
-  pcl::transformPointCloud(*source_viewpoint_candidates_, *transformed_pointcloud, T);
+  ROS_INFO("[SkeletonEstimator]: ransac          %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  t_checkpoint = ros::WallTime::now();
+
+  pcl::PointCloud<pcl::PointNormal>::Ptr transformed_pointcloud(new pcl::PointCloud<pcl::PointNormal>());
+  pcl::transformPointCloudWithNormals(*source_viewpoint_candidates_, *transformed_pointcloud, T);
+
+  // T's 3x3 block is scale*R, so the normals come out scaled by `scale`; renormalize, then
+  // shift each viewpoint along its normal (the offset is applied after scaling, so it's in meters)
+  for (auto& p : transformed_pointcloud->points) {
+    p.getNormalVector3fMap().normalize();
+    p.getVector3fMap() += static_cast<float>(viewpoint_offset_) * p.getNormalVector3fMap();
+  }
 
   sensor_msgs::PointCloud2 output_msg;
   pcl::toROSMsg(*transformed_pointcloud, output_msg);
   output_msg.header.frame_id = msg->header.frame_id; // Set frame
   output_msg.header.stamp = ros::Time::now();
   pub_candidate_viewpoints_.publish(output_msg);
+
+  ROS_INFO("[SkeletonEstimator]: viewpoints      %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  t_checkpoint = ros::WallTime::now();
 
   std::vector<geometry_msgs::Point> transformed_points = std::vector<geometry_msgs::Point>(0);
 
@@ -428,6 +467,11 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
   lines.points = transformed_points;
 
   pub_transfomed_skeleton_.publish(lines);
+
+  ROS_INFO("[SkeletonEstimator]: skeleton        %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+
+  ROS_INFO("[SkeletonEstimator]: align total     %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
+  ROS_INFO("[SkeletonEstimator]: ---------------------------");
 }
 
 
@@ -582,7 +626,7 @@ Eigen::Matrix4f SkeletonEstimator::runRANSAC(
       tranfomation_history_.pop_back();
     }
 
-    ROS_WARN("best score %f", tranfomation_history_.front().cost);
+    // ROS_WARN("best score %f", tranfomation_history_.front().cost);
 
     return tranfomation_history_.front().matrix;
 

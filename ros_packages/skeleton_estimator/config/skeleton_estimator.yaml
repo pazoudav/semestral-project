@@ -18,3 +18,4 @@ min_z: 0.2                    # input octomap points below this z are filtered o
 alignment:
   min_height_ratio: 0.5
   max_height_ratio: 2.0
+  viewpoint_offset: 2.5         # [m] each aligned viewpoint is shifted this far along its normal before publishing
