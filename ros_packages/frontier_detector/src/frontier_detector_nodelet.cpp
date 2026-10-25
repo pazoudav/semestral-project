@@ -144,7 +144,8 @@ namespace frontier_detector
 
       // current UAV reference position in the octomap's frame, derived from tracker command + control-manager diagnostics freshness
       std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void>>> getPosition();
-      // builds and publishes a FrontierArray with the single best (highest-coverage) viewpoint per valid frontier
+      // builds and publishes a FrontierArray with all viewpoints of each valid frontier, sorted by coverage (best first); tsp_solver uses only
+      // viewpoints[0], explorer's local viewpoint refinement uses the rest
       void                                                             publishFrontiers();
 
       // copies the current frontier state (under mutex_frontiers_) into a VisualizationSnapshot and hands it to the visualization worker
@@ -381,7 +382,6 @@ namespace frontier_detector
           viewpoint_msg.position.z = v.position.z();
           viewpoint_msg.coverage   = v.coverage;
           frontier_msg.viewpoints.push_back(viewpoint_msg);
-          break;
         }
         msg.frontiers.push_back(frontier_msg);
       }

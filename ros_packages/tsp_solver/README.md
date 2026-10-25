@@ -26,7 +26,7 @@ tour, which it then hands to `path_planner` in chunks to get a flyable path.
 | Service (private name) | Remap (launch) | Type | Purpose |
 |---|---|---|---|
 | `~set_start_in` | `~set_start` | `tsp_solver/SetStart` (`geometry_msgs/Point position` → `bool success`) | Sets/replaces the graph's start node (current UAV position). |
-| `~solve_in` | `~solve` | `tsp_solver/Solve` (`geometry_msgs/Vector3 velocity` → `geometry_msgs/Point[] path`, `bool success`, `string message`) | Solves the TSP for the given start velocity/heading and returns the ordered viewpoint tour. |
+| `~solve_in` | `~solve` | `tsp_solver/Solve` (`geometry_msgs/Vector3 velocity` → `geometry_msgs/Point[] path`, `uint32[] ids`, `bool success`, `string message`) | Solves the TSP for the given start velocity/heading and returns the ordered viewpoint tour; `ids` holds the frontier id of each path point (parallel to `path`, start node id 0). |
 
 Both services are called back-to-back by `Explorer::makePath()` (in `explorer`, not
 part of this package) to obtain a fresh tour.
@@ -46,7 +46,7 @@ part of this package) to obtain a fresh tour.
 - **`findPathDistances`** — issues one `~find_simplified_path_out` call from a given start position to a batch of goal positions (a single shared Dijkstra search over all goals, per `path_planner`'s own batching design); returns each goal's path length as the sum of the returned simplified path's segment lengths, or `BIG_DISTANCE` for a goal `path_planner` couldn't reach or if the service call itself failed.
 - **`setKDtreeInput`** — loads a point cloud of guiding viewpoints into a `pcl::KdTreeFLANN` used to bias the cost matrix toward them (only exercised if the candidate-viewpoints callback is re-enabled).
 - **`constructDistanceMatrix`** — flattens the current `distances_`/`nodes_` into the dense `cost_matrix_`/`viewpoint_positions_`/`isAccesible_` fed to `LKHSolve()` via a single block copy (no per-node lookups), adding a start-heading penalty and (if set) KD-tree viewpoint weighting to the start row. Must be called with `mutex_dist_graph_` held.
-- **`solve(octomath::Vector3 velocity)`** — main entry point used by the nodelet: snapshots the distance graph (`constructDistanceMatrix()`, briefly under `mutex_dist_graph_`) and calls `LKHSolve()`, then maps the returned tour indices back to viewpoint positions, discarding (returning an empty tour) if any index is out of range for the current viewpoint count.
+- **`solve(octomath::Vector3 velocity, std::vector<unsigned long>& ids)`** — main entry point used by the nodelet: snapshots the distance graph (`constructDistanceMatrix()`, briefly under `mutex_dist_graph_`) and calls `LKHSolve()`, then maps the returned tour indices back to viewpoint positions and fills `ids` with the matching node ids (from the snapshotted `node_ids_`), discarding (returning an empty tour) if any index is out of range for the current viewpoint count.
 - **LKH invocation (`GlobalParWrite` / `GlobalProblemWrite` / `LKHSolve` / `GlobalResultsRead`)** — `GlobalParWrite()` writes the LKH `.par` control file once, from the `TSPsolver` constructor (its contents are fixed for the process lifetime). Each `LKHSolve()` call writes the current cost matrix out as an explicit-weight ATSP problem file (`cost_matrix.txt`), removes any previous `solution.txt`, shells out via `std::system()` to the bundled `LKH/LKH` binary, and — only if that call exits successfully — parses the fresh `solution.txt`'s `TOUR_SECTION` back into a 0-based node index tour; a nonzero exit code is logged and returns an empty tour rather than risking a stale/mismatched `solution.txt` being parsed. Paths are resolved relative to `ros::package::getPath("tsp_solver")`.
 
 ### Concurrency
@@ -67,7 +67,7 @@ tsp_solver/
 │   └── tsp_solver.launch       # standalone/nodelet-manager launch, topic/service remaps
 ├── srv/
 │   ├── SetStart.srv            # geometry_msgs/Point position -> bool success
-│   └── Solve.srv                # geometry_msgs/Vector3 velocity -> geometry_msgs/Point[] path, bool success, string message
+│   └── Solve.srv                # geometry_msgs/Vector3 velocity -> geometry_msgs/Point[] path, uint32[] ids, bool success, string message
 ├── include/tsp_solver/
 │   └── tsp_solver.hpp          # TSPsolver class declaration + planner_t node struct
 ├── src/

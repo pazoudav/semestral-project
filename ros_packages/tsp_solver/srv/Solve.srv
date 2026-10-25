@@ -1,5 +1,6 @@
 geometry_msgs/Vector3 velocity
 ---
 geometry_msgs/Point[] path
+uint32[] ids # frontier id of each path point (parallel to path); the start node has id 0
 bool success
 string message

@@ -91,7 +91,7 @@ void TSPsolver::reserveStartSlot()
 
 
 // Builds the cost matrix for the current graph/start heading, solves it with LKH, and maps the resulting index tour back to viewpoint positions.
-std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
+std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity, std::vector<unsigned long>& ids)
 {
   std::scoped_lock solve_lock(mutex_solve_);
 
@@ -110,6 +110,8 @@ std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
 
   std::vector<octomap::point3d> solution;
   solution.reserve(permutation.size());
+  ids.clear();
+  ids.reserve(permutation.size());
   for (auto i : permutation){
     // Guards against a stale/mismatched solution.txt (e.g. left over from a failed LKH run)
     // being parsed into indices that no longer fit the current viewpoint set.
@@ -117,9 +119,11 @@ std::vector<octomap::point3d> TSPsolver::solve(octomath::Vector3 velocity)
     {
       ROS_ERROR("[TSPsolver]: LKH tour index %d out of range for %d viewpoints, discarding solve result", i, n);
       solution.clear();
+      ids.clear();
       break;
     }
     solution.push_back(viewpoint_positions_[i]);
+    ids.push_back(node_ids_[i]);
   }
 
   // Remember this tour by node id (start first) so the next solve can reuse its still-valid tail as the LKH initial tour.

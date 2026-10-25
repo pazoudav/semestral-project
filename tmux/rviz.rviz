@@ -633,15 +633,15 @@ Visualization Manager:
           Namespaces:
             {}
           Queue Size: 100
-          Value: false
+          Value: true
         - Class: rviz/MarkerArray
-          Enabled: true
+          Enabled: false
           Marker Topic: /uav1/octomap_local_vis/occupied_cells_vis_array
           Name: OccupiedLocal
           Namespaces:
             map: true
           Queue Size: 100
-          Value: true
+          Value: false
         - Class: rviz/MarkerArray
           Enabled: false
           Marker Topic: /uav1/octomap_local_vis/free_cells_vis_array
@@ -650,28 +650,10 @@ Visualization Manager:
             {}
           Queue Size: 100
           Value: false
-
-        - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /uav1/big_octomap
-          Name: big_octomap
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-
       Enabled: true
       Name: Octomap
     - Class: rviz/Group
       Displays:
-        - Class: rviz/Marker
-          Enabled: false
-          Marker Topic: /rosa_vis/le_lines
-          Name: lineextract_lines
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
         - Class: rviz/Marker
           Enabled: true
           Marker Topic: /uav1/skeleton_estimator/extracted_skeleton
@@ -688,7 +670,7 @@ Visualization Manager:
             {}
           Queue Size: 100
           Value: false
-        - Alpha: 0.30000001192092896
+        - Alpha: 0.2
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
             Max Value: 225.37405395507812
@@ -723,54 +705,6 @@ Visualization Manager:
           Namespaces:
             vertex_ID: true
           Queue Size: 100
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /rosa_vis/rosa_orientation
-          Name: ROSA_orientation
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /rosa_vis/branches
-          Name: branches
-          Namespaces:
-            "": true
-          Queue Size: 100
-          Value: true
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /rosa_vis/branches_dir
-          Name: branches_dir
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-        - Class: rviz/Marker
-          Enabled: false
-          Marker Topic: /rosa_debug/adj
-          Name: sample_rep_adj
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /rosa_vis/input_normal
-          Name: pcloud_normal
-          Namespaces:
-            {}
-          Queue Size: 100
-          Value: false
-        - Class: rviz/MarkerArray
-          Enabled: false
-          Marker Topic: /rosa_vis/branches_start_end
-          Name: sub_space_begin_end
-          Namespaces:
-            {}
-          Queue Size: 100
           Value: false
         - Alpha: 0.30000001192092896
           Autocompute Intensity Bounds: true
@@ -800,7 +734,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: false
-      Enabled: false
+      Enabled: true
       Name: ROSA
   Enabled: true
   Global Options:

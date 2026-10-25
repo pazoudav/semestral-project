@@ -1,12 +1,21 @@
 planning:
   replanning_distance: 0.6
   skip_path_point_distance: 0.4
+  max_length_after_first_viewpoint: 2.0 # [m] path_ (and so the trajectory_generation request) is cut this far past the first tour viewpoint (arc length)
   flight_free_distance: 0.6
   replan_request_cooldown: 0.5 # [s] min interval between replan_request_out service calls, to avoid overwhelming the service
   stuck_distance: 0.1 # [m] min movement over stuck_duration to not be considered stuck
   stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE
   latency_compensation: 0.5 # [s] initial estimate of replan latency (state sampled -> trajectory published); replans start from the MPC-predicted position this far ahead; 0 disables
   latency_ema_alpha: 0.3 # [-] weight of each new latency measurement in the discounted average (1 = only the last replan counts)
+
+local_refinement: # re-picks viewpoints of the nearest TSP tour clusters by DP over a layered DAG (Euclidean distances), see refineLocalTour()
+  enabled: true
+  radius: 6.0          # [m] R_rf, tour viewpoints closer than this to the start are refined; keep above buildLocalPath's horizon (first viewpoint + max_length_after_first_viewpoint)
+  max_clusters: 8      # N_max, max number of consecutive tour clusters refined
+  max_viewpoints: 8    # K, top viewpoints by coverage considered per cluster (frontier_detector publishes at most frontiers/viewpoint/max_count)
+  w_consistency: 1.5   # [m/rad] penalty on the angle between current velocity and the first edge
+  w_coverage: 0.0      # [m] reward for normalized viewpoint coverage (0 = pure shortest local tour)
 
 prm:
   free_space_diameter: 1.2   # was kept in sync with the removed prm_solver's prm.free_space_diameter; path_planner has no direct equivalent (closest: min_obstacle_clearance in path_planner/config/path_planner.yaml)

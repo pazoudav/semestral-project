@@ -17,6 +17,7 @@
 #include <mrs_msgs/TrajectoryReferenceSrv.h>
 #include <mrs_msgs/GetPathSrv.h>
 #include <std_srvs/Trigger.h>
+#include <std_msgs/Bool.h>
 
 #include <mrs_octomap_tools/octomap_methods.h>
 #include <octomap/octomap.h>
@@ -74,6 +75,7 @@ namespace explorer
     double _replanning_distance_;
     double _flight_free_distance_;
     double _skip_path_point_distance_;
+    double _max_length_after_first_viewpoint_;
     double _free_space_dia_;
     double _scale_points_;
     double _scale_lines_;
@@ -86,6 +88,12 @@ namespace explorer
     double _latency_compensation_;
     double _latency_ema_alpha_;
     double latency_estimate_; // discounted average of measured replan latency, seeded with _latency_compensation_; see pathAndTrajectory()
+    bool   _refine_enabled_;
+    double _refine_radius_;
+    int    _refine_max_clusters_;
+    int    _refine_max_viewpoints_;
+    double _refine_w_consistency_;
+    double _refine_w_coverage_;
 
     struct Path_t
     {
@@ -99,6 +107,15 @@ namespace explorer
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr  transformed_viewpoint_candidates_;
 
+    // latest frontier_detector viewpoints per frontier id (sorted by coverage, best first), cached by callbackFrontiers() for refineLocalTour()
+    struct Viewpoint_t
+    {
+      octomap::point3d position;
+      int              coverage;
+    };
+    std::mutex                                                  mutex_frontier_viewpoints_;
+    std::unordered_map<unsigned long, std::vector<Viewpoint_t>> frontier_viewpoints_;
+
 
     std::mutex                                mutex_octree_;
     std::shared_ptr<OcTree_t>                 octree_ = nullptr;
@@ -111,6 +128,11 @@ namespace explorer
     std::atomic<bool> map_update_;
     std::atomic<bool> map_ready_;
     std::atomic<bool> tsp_ready_;
+    // end of exploration: frontier count of the latest frontier_detector message, whether any message was non-empty yet, and the
+    // (sticky) finished flag set by timerReplanner() and published on exploration_finished_out
+    std::atomic<size_t> num_frontiers_{0};
+    std::atomic<bool>   had_frontiers_{false};
+    std::atomic<bool>   exploration_finished_{false};
     bool              first_path_planend_;
     bool              bv_map_frame_set_;
     bool              braking_;
@@ -134,6 +156,7 @@ namespace explorer
 
     // publishers
     ros::Publisher pub_reference_;
+    ros::Publisher pub_exploration_finished_;
     mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>             sc_get_trajectory_;
     mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv> sc_trajectory_reference_;
     mrs_lib::ServiceClientHandler<tsp_solver::SetStart>             sc_tsp_set_start_;
@@ -186,11 +209,16 @@ namespace explorer
     bool  checkImminentCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
     bool  nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
     bool  checkStuck(const octomap::point3d& start_coord);
-    bool  solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path);
+    bool  solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path, std::vector<unsigned long>& tour_ids);
+    void  refineLocalTour(const octomap::point3d& start_coord, const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path,
+                          const std::vector<unsigned long>& tour_ids);
     void  visualizeGlobalPath(const std::vector<octomap::point3d>& glob_path);
     bool  buildLocalPath(const octomap::point3d& start_coord, const std::vector<octomap::point3d>& glob_path, const octomath::Vector3& velocity,
                           std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path);
-    bool  finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path, const ros::Time& t0);
+    bool  findSimplifiedPath(const octomap::point3d& start, const octomap::point3d& goal, const octomath::Vector3& velocity,
+                             std::vector<octomap::point3d>& segment);
+    void  randomStepPath(const octomap::point3d& start_coord, std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path);
+    bool  finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path);
     std::optional<mrs_msgs::TrajectoryReference>                     makeTrajectory(const Path_t& path);
     bool                                                              publishTrajectory(const mrs_msgs::TrajectoryReference& trajectory, int id);
     bool                                                              checkTrajectoryCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
@@ -216,11 +244,19 @@ namespace explorer
     param_loader.loadParam("planning/replanning_distance",_replanning_distance_);
     param_loader.loadParam("planning/flight_free_distance",_flight_free_distance_);
     param_loader.loadParam("planning/skip_path_point_distance",_skip_path_point_distance_);
+    param_loader.loadParam("planning/max_length_after_first_viewpoint", _max_length_after_first_viewpoint_);
     param_loader.loadParam("planning/replan_request_cooldown",_replan_request_cooldown_);
     param_loader.loadParam("planning/stuck_distance",_stuck_distance_);
     param_loader.loadParam("planning/stuck_duration",_stuck_duration_);
     param_loader.loadParam("planning/latency_compensation",_latency_compensation_);
     param_loader.loadParam("planning/latency_ema_alpha",_latency_ema_alpha_);
+
+    param_loader.loadParam("local_refinement/enabled",        _refine_enabled_);
+    param_loader.loadParam("local_refinement/radius",         _refine_radius_);
+    param_loader.loadParam("local_refinement/max_clusters",   _refine_max_clusters_);
+    param_loader.loadParam("local_refinement/max_viewpoints", _refine_max_viewpoints_);
+    param_loader.loadParam("local_refinement/w_consistency",  _refine_w_consistency_);
+    param_loader.loadParam("local_refinement/w_coverage",     _refine_w_coverage_);
 
     param_loader.loadParam("prm/free_space_diameter",_free_space_dia_);
 
@@ -254,6 +290,7 @@ namespace explorer
     sh_frontiers_             = mrs_lib::SubscribeHandler<frontier_detector::FrontierArray>(shopts, "frontiers_in", &Explorer::callbackFrontiers, this);
 
     pub_reference_            = nh_.advertise<mrs_msgs::ReferenceStamped>("reference_out", 1);
+    pub_exploration_finished_ = nh_.advertise<std_msgs::Bool>("exploration_finished_out", 1, true);
 
     sc_get_trajectory_            = mrs_lib::ServiceClientHandler<mrs_msgs::GetPathSrv>(nh_, "trajectory_generation_out");
     sc_trajectory_reference_      = mrs_lib::ServiceClientHandler<mrs_msgs::TrajectoryReferenceSrv>(nh_, "trajectory_reference_out");
@@ -286,6 +323,10 @@ namespace explorer
 
     latency_estimate_ = _latency_compensation_;
 
+    std_msgs::Bool finished_msg;
+    finished_msg.data = false;
+    pub_exploration_finished_.publish(finished_msg);
+
     is_initialized_ = true;
     bv_map_frame_set_ = false;
     state_ = STATE_IDLE;
@@ -306,6 +347,8 @@ namespace explorer
 
 
   // driver of the whole replanning loop (rate timer_rates/fast in explorer.yaml); waits for is_initialized_/map_ready_/tsp_ready_, then:
+  // - once finished (sticky): does nothing; it becomes finished when frontier_detector has no frontiers left (after having had some) and
+  //   checkStuck() reports the UAV is not moving, which sets exploration_finished_ and publishes true on exploration_finished_out
   // - STATE_IDLE: requestReplan() (retried every tick, rate-limited by planning/replan_request_cooldown, until a replan succeeds)
   // - STATE_TRAJ_EXEC: requestReplan() once nearGoal() or checkTrajectoryCollision() fires on the current MPC prediction,
   //   or forces STATE_IDLE if checkStuck() reports no progress
@@ -324,18 +367,9 @@ namespace explorer
       ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: TSP not ready, cannot calculate PATH");
       return;
     }  
-    
-
-    if (state_ == STATE_IDLE)
-    {
-      ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: idle state, start planning");
-      requestReplan();
-      return;
-    }
-
-    if (state_ != STATE_TRAJ_EXEC)
-    {
-      return;
+    if (exploration_finished_){
+      ROS_ERROR_THROTTLE(5.0, "[MrsExplorer]: exploration finished");
+      // return;
     }
 
     octomap::point3d start_coord;
@@ -345,6 +379,31 @@ namespace explorer
     if (!getCurrentStateAndPrediction(start_coord, prediction, velocity))
     {
       ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: cannot get state and prediction");
+      return;
+    }
+
+    const bool stuck = checkStuck(start_coord);
+
+    // end of exploration: frontier_detector has no frontiers left (after having had some) and the UAV is not moving
+    if (had_frontiers_ && num_frontiers_ == 0 && stuck)
+    {
+      ROS_INFO("[MrsExplorer]: END OF EXPLORATION, no frontiers left and UAV is not moving");
+      exploration_finished_ = true;
+      std_msgs::Bool finished_msg;
+      finished_msg.data = true;
+      pub_exploration_finished_.publish(finished_msg);
+      return;
+    }
+
+    if (state_ == STATE_IDLE)
+    {
+      ROS_INFO_THROTTLE(0.5, "[MrsExplorer]: idle state, start planning");
+      requestReplan();
+      return;
+    }
+
+    if (state_ != STATE_TRAJ_EXEC)
+    {
       return;
     }
 
@@ -364,7 +423,7 @@ namespace explorer
     }
 
     // force back to IDLE if the UAV hasn't made meaningful progress for a while 
-    if (checkStuck(start_coord))
+    if (stuck)
     {
       ROS_ERROR("[MrsExplorer]: UAV stuck (moved < %.2f m in %.2f s) -> forcing IDLE", _stuck_distance_, _stuck_duration_);
       changeState(STATE_IDLE);
@@ -424,6 +483,10 @@ namespace explorer
 
     ros::Time t0 = ros::Time::now();
 
+    // wall-clock timing of the whole cycle; makePath()/makeTrajectory() log their own phases indented beneath their line here
+    ros::WallTime t_checkpoint = ros::WallTime::now();
+    ros::WallTime t_total      = ros::WallTime::now();
+
     // dont generate trajectory if path generation unsuccesful of no new path needed
     bool new_path = makePath();
 
@@ -431,6 +494,8 @@ namespace explorer
     {
       return false;
     }
+    ROS_INFO("[MrsExplorer]: makePath         %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    t_checkpoint = ros::WallTime::now();
 
     for (int i=0; i+1<path_.points.size(); i++)
     {
@@ -440,6 +505,8 @@ namespace explorer
     }
     bv_path_->publish();
     bv_path_->clearBuffers();
+    ROS_INFO("[MrsExplorer]: visualize        %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    t_checkpoint = ros::WallTime::now();
 
 
     auto trajectory = makeTrajectory(path_);
@@ -449,12 +516,15 @@ namespace explorer
       ROS_WARN("[MrsExplorer]: trajectory generation falied");
       return false;
     }
+    ROS_INFO("[MrsExplorer]: makeTrajectory   %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    t_checkpoint = ros::WallTime::now();
 
     if (!publishTrajectory(*trajectory, path_.id))
     {
       ROS_WARN("[MrsExplorer]: trajectory reference publishing failed");
       return false;
     }
+    ROS_INFO("[MrsExplorer]: publish          %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 
     // ROS_WARN("[MrsExplorer]: trajectory replan succesfull");
 
@@ -466,18 +536,18 @@ namespace explorer
       latency_estimate_ = _latency_ema_alpha_*dt.toSec() + (1.0 - _latency_ema_alpha_)*latency_estimate_;
     }
 
-    ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: PATH update %.1fms, latency estimate %.1fms", dt.toNSec()/1000000.0, latency_estimate_*1000.0);
+    ROS_INFO("[MrsExplorer]: total            %8.3fms (sim %.1fms), latency estimate %.1fms", 1000 * (ros::WallTime::now() - t_total).toSec(), dt.toSec()*1000.0, latency_estimate_*1000.0);
+    ROS_INFO("[MrsExplorer]: ---------------------------");
     return true;
   }
 
   // (re)plans path_ unconditionally (all gating happens in timerReplanner()): getCurrentStateAndPrediction() -> compensateLatency() moves the start
-  // ahead along the MPC prediction -> resets goal_/current_viewpoint_ to that start -> solveTsp() for a fresh global viewpoint tour -> visualizeGlobalPath() -> buildLocalPath() (path_planner sub-paths to the next
+  // ahead along the MPC prediction -> resets goal_/current_viewpoint_ to that start -> solveTsp() for a fresh global viewpoint tour -> visualizeGlobalPath()
+  // -> refineLocalTour() (re-picks the viewpoints of the nearest tour clusters) -> buildLocalPath() (path_planner sub-paths to the next
   // few tour viewpoints) -> finalizePath(); returns true iff path_ was updated
   bool Explorer::makePath()
   {
     // ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: starting path (re)plannig");
-
-    ros::Time t0 = ros::Time::now();
 
     octomap::point3d start_coord;
     mrs_msgs::MpcPredictionFullState prediction;
@@ -488,6 +558,9 @@ namespace explorer
       return false;
     }
 
+    // phase timing, logged indented beneath pathAndTrajectory()'s makePath line
+    ros::WallTime t_checkpoint = ros::WallTime::now();
+
     // the UAV keeps flying the old trajectory while this replan runs, so plan from where it will be by the time the new one takes over
     compensateLatency(prediction, start_coord, velocity);
 
@@ -496,13 +569,23 @@ namespace explorer
     current_viewpoint_ = start_coord;
 
     std::vector<octomap::point3d> glob_path;
-    if (!solveTsp(velocity, glob_path))
+    std::vector<unsigned long>    tour_ids;
+    if (!solveTsp(velocity, glob_path, tour_ids))
     {
       ROS_ERROR("[MrsExplorer]: TSP solve failed");
       return false;
     }
 
     visualizeGlobalPath(glob_path);
+    ROS_INFO("[MrsExplorer]:   tsp            %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    t_checkpoint = ros::WallTime::now();
+
+    if (_refine_enabled_)
+    {
+      refineLocalTour(start_coord, velocity, glob_path, tour_ids);
+    }
+    ROS_INFO("[MrsExplorer]:   refine         %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    t_checkpoint = ros::WallTime::now();
 
     std::vector<octomap::point3d> path(0);
     std::vector<octomap::point3d> sub_global_path(0);
@@ -511,8 +594,9 @@ namespace explorer
       ROS_ERROR("[MrsExplorer]: local path build failed, replan local path");
       return false;
     }
+    ROS_INFO("[MrsExplorer]:   local path     %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 
-    bool succ = finalizePath(path, sub_global_path, t0);
+    bool succ = finalizePath(path, sub_global_path);
     if (!succ){
       ROS_ERROR("[MrsExplorer]: finalize path build failed");
       return false;
@@ -521,8 +605,8 @@ namespace explorer
   }
 
    // calls tsp_solver's ~set_start_out (start = current_viewpoint_) and ~solve_out (with velocity) services to obtain a fresh global viewpoint tour
-  // into glob_path; returns false if either call fails or the tour has <= 1 point
-  bool Explorer::solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path)
+  // into glob_path (and the parallel frontier ids into tour_ids); returns false if either call fails or the tour has <= 1 point
+  bool Explorer::solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path, std::vector<unsigned long>& tour_ids)
   {
     // ROS_INFO("[MrsExplorer]: TSP solve start");
 
@@ -550,6 +634,7 @@ namespace explorer
     {
       glob_path.emplace_back(p.x, p.y, p.z);
     }
+    tour_ids.assign(solve_srv.response.ids.begin(), solve_srv.response.ids.end());
     // ROS_INFO("[MrsExplorer]: TSP solve end");
 
     if (glob_path.size() <= 1)
@@ -560,96 +645,290 @@ namespace explorer
     return true;
   }
 
+  // local viewpoint refinement (FUEL-style, Euclidean instead of time lower bounds): takes the consecutive tour clusters after the start whose
+  // tour viewpoint is within local_refinement/radius of start_coord (at most max_clusters, stopping at the first one not in the frontier cache),
+  // and re-picks one viewpoint per cluster out of its top max_viewpoints (by coverage). The candidates form a layered DAG
+  // start -> cluster 1 -> ... -> cluster N -> next tour point (fixed anchor), solved exactly by DP over the layers. Cost =
+  // sum of Euclidean edge lengths + w_consistency * angle(velocity, first edge) - w_coverage * (coverage / layer's max coverage).
+  // The tour's own viewpoint is always candidate 0 of its layer, so the result is never worse than the TSP tour under this cost.
+  // Rewrites the chosen viewpoints into glob_path in place and queues the refined segment as orange rays on bv_path_
+  void Explorer::refineLocalTour(const octomap::point3d& start_coord, const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path,
+                                 const std::vector<unsigned long>& tour_ids)
+  {
+    if (tour_ids.size() != glob_path.size())
+    {
+      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: TSP tour ids missing, skipping local viewpoint refinement");
+      return;
+    }
+
+    // same leading-point skip as buildLocalPath()
+    size_t first = 0;
+    while (first < glob_path.size() && start_coord.distance(glob_path[first]) < _skip_path_point_distance_)
+    {
+      first++;
+    }
+
+    // layers[k] = candidates of tour point first+k, the tour's own viewpoint first; coverage normalized to [0, 1] per layer
+    struct Candidate_t
+    {
+      octomap::point3d position;
+      double           coverage;
+    };
+    std::vector<std::vector<Candidate_t>> layers;
+    {
+      std::scoped_lock lock(mutex_frontier_viewpoints_);
+      for (size_t i = first; i < glob_path.size() && static_cast<int>(layers.size()) < _refine_max_clusters_; i++)
+      {
+        if (start_coord.distance(glob_path[i]) > _refine_radius_)
+        {
+          break;
+        }
+        auto it = frontier_viewpoints_.find(tour_ids[i]);
+        if (it == frontier_viewpoints_.end() || it->second.empty())
+        {
+          break;
+        }
+
+        std::vector<Candidate_t> layer;
+        layer.push_back({glob_path[i], 0.0});
+        double max_coverage = 1.0;
+        const int n_vp = std::min(static_cast<int>(it->second.size()), _refine_max_viewpoints_);
+        for (int v = 0; v < n_vp; v++)
+        {
+          const auto& vp = it->second[v];
+          max_coverage = std::max(max_coverage, static_cast<double>(vp.coverage));
+          if (vp.position.distance(glob_path[i]) < 1e-3)
+          {
+            layer[0].coverage = vp.coverage;
+          } else
+          {
+            layer.push_back({vp.position, static_cast<double>(vp.coverage)});
+          }
+        }
+        for (auto& c : layer)
+        {
+          c.coverage /= max_coverage;
+        }
+        layers.push_back(std::move(layer));
+      }
+    }
+
+    if (layers.empty())
+    {
+      return;
+    }
+
+    const size_t last = first + layers.size(); // index of the anchor (first tour point after the refined segment), if any
+    const bool   has_anchor = last < glob_path.size();
+    const bool   use_consistency = velocity.norm() > 0.2;
+
+    auto nodeCost = [&](size_t k, const Candidate_t& c) {
+      double cost = -_refine_w_coverage_ * c.coverage;
+      if (k == 0 && use_consistency)
+      {
+        const octomath::Vector3 dir = c.position - start_coord;
+        if (dir.norm() > 1e-3)
+        {
+          cost += _refine_w_consistency_ * velocity.angleTo(dir);
+        }
+      }
+      return cost;
+    };
+
+    // forward pass over the layers; cost[b] = cheapest cost of reaching candidate b of the current layer from start_coord
+    std::vector<double>           cost = {0.0};
+    std::vector<octomap::point3d> prev = {start_coord};
+    std::vector<std::vector<int>> parents(layers.size());
+    double baseline = 0.0; // cost of keeping the TSP tour's own viewpoints (candidate 0 everywhere), for logging
+    for (size_t k = 0; k < layers.size(); k++)
+    {
+      const auto&         layer = layers[k];
+      std::vector<double> next_cost(layer.size(), std::numeric_limits<double>::infinity());
+      parents[k].assign(layer.size(), 0);
+      for (size_t b = 0; b < layer.size(); b++)
+      {
+        const double node_cost = nodeCost(k, layer[b]);
+        for (size_t a = 0; a < prev.size(); a++)
+        {
+          const double c = cost[a] + prev[a].distance(layer[b].position) + node_cost;
+          if (c < next_cost[b])
+          {
+            next_cost[b]  = c;
+            parents[k][b] = static_cast<int>(a);
+          }
+        }
+      }
+      baseline += prev[0].distance(layer[0].position) + nodeCost(k, layer[0]);
+
+      cost = std::move(next_cost);
+      prev.clear();
+      for (const auto& c : layer)
+      {
+        prev.push_back(c.position);
+      }
+    }
+
+    // close with the edge to the anchor and pick the best final candidate
+    int    best      = 0;
+    double best_cost = std::numeric_limits<double>::infinity();
+    for (size_t b = 0; b < prev.size(); b++)
+    {
+      const double c = cost[b] + (has_anchor ? prev[b].distance(glob_path[last]) : 0.0);
+      if (c < best_cost)
+      {
+        best_cost = c;
+        best      = static_cast<int>(b);
+      }
+    }
+    if (has_anchor)
+    {
+      baseline += prev[0].distance(glob_path[last]);
+    }
+
+    // backtrack and write the chosen viewpoints into the tour
+    int changed = 0;
+    for (int k = static_cast<int>(layers.size()) - 1; k >= 0; k--)
+    {
+      glob_path[first + k] = layers[k][best].position;
+      changed += best != 0;
+      best = parents[k][best];
+    }
+
+    octomap::point3d v0 = start_coord;
+    for (size_t i = first; i < (has_anchor ? last + 1 : last); i++)
+    {
+      const octomap::point3d& v1 = glob_path[i];
+      bv_path_->addRay(mrs_lib::geometry::Ray(Eigen::Vector3d(v0.x(), v0.y(), v0.z()),
+                                              Eigen::Vector3d(v1.x(), v1.y(), v1.z())),
+                                              1.0, 0.5, 0.0, 1.0);
+      v0 = v1;
+    }
+
+    ROS_INFO("[MrsExplorer]: local refinement over %lu clusters changed %d viewpoints, cost %.2f -> %.2f", layers.size(), changed, baseline, best_cost);
+  }
+
   // walks glob_path from start_coord, skipping tour points closer than planning/skip_path_point_distance, collecting the visited tour points into
-  // sub_global_path and calling path_planner's ~find_simplified_path_out per consecutive pair (current velocity only on the first segment);
-  // sub-path points are appended to path (deduplicated by skip_path_point_distance). Stops once sub_global_path has > 3 points and >= 4 m of
-  // straight-line tour length, or at the tour's end. On a planner failure returns false, except after kMaxTempPathFailures failures in a row,
-  // when it instead returns a 1 m step in a random direction to break the deadlock
+  // sub_global_path and planning a path_planner sub-path to each (current velocity only on the first segment); sub-path points are appended to
+  // path (deduplicated by skip_path_point_distance). Stops once path extends planning/max_length_after_first_viewpoint of arc length past the
+  // first tour viewpoint (the overshooting edge is cut exactly there, keeps the trajectory generation request short), or at the tour's end.
+  // On a planner failure returns false, except after kMaxTempPathFailures failures in a row, when it instead returns a 1 m step in a random
+  // direction (randomStepPath()) to break the deadlock
   bool Explorer::buildLocalPath(const octomap::point3d& start_coord, const std::vector<octomap::point3d>& glob_path, const octomath::Vector3& velocity,
                                 std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path)
   {
-    int i = 0;
-    int j = 0;
-    double path_distance = 0.0;
-    // while((path.size() == 0 && i < glob_path.size()) || start_coord.distance(path.back()) < _skip_path_point_distance_)
-    sub_global_path.push_back(start_coord);
-    path.push_back(start_coord);
+    sub_global_path.assign({start_coord});
+    path.assign({start_coord});
 
-    while(sub_global_path.size() <= 3 || path_distance < 4.0)
+    const double max_tail_length      = _max_length_after_first_viewpoint_;
+    double       tail_length          = 0.0;    // arc length of path past the first tour viewpoint
+    bool         past_first_viewpoint = false;  // true once the first segment (start -> first tour viewpoint) is appended
+    size_t       i                    = 0;      // index of the next candidate tour point in glob_path
+
+    while (tail_length < max_tail_length)
     {
-      while (i + 1 < static_cast<int>(glob_path.size()) && sub_global_path.back().distance(glob_path[i]) < _skip_path_point_distance_)
+      // advance to the next tour point far enough from the last accepted one; stop once the tour has no further distinct point
+      while (i + 1 < glob_path.size() && sub_global_path.back().distance(glob_path[i]) < _skip_path_point_distance_)
       {
         i++;
       }
-      const double dist_to_next = sub_global_path.back().distance(glob_path[i]);
-      if (dist_to_next < 1e-6 && i == static_cast<int>(glob_path.size()) - 1)
+      if (i + 1 >= glob_path.size() && sub_global_path.back().distance(glob_path[i]) < 1e-6)
       {
-        // reached the end of the tour, no further distinct point available
         break;
       }
-      path_distance += dist_to_next;
-      sub_global_path.push_back(glob_path[i]);
 
-      path_planner::FindSimplifiedPath find_path_srv;
-      find_path_srv.request.start.x = sub_global_path[j].x();
-      find_path_srv.request.start.y = sub_global_path[j].y();
-      find_path_srv.request.start.z = sub_global_path[j].z();
-      geometry_msgs::Point goal_point;
-      goal_point.x = sub_global_path[j+1].x();
-      goal_point.y = sub_global_path[j+1].y();
-      goal_point.z = sub_global_path[j+1].z();
-      find_path_srv.request.goals.push_back(goal_point);
-      octomath::Vector3 seg_velocity = j == 0 ? velocity : velocity*0.0;
-      find_path_srv.request.velocity.x = seg_velocity.x();
-      find_path_srv.request.velocity.y = seg_velocity.y();
-      find_path_srv.request.velocity.z = seg_velocity.z();
-      if (!sc_path_planner_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success[0])
+      const octomath::Vector3 seg_velocity = past_first_viewpoint ? octomath::Vector3(0.0f, 0.0f, 0.0f) : velocity;
+      std::vector<octomap::point3d> segment;
+      if (!findSimplifiedPath(sub_global_path.back(), glob_path[i], seg_velocity, segment))
       {
         ROS_ERROR("[MrsExplorer]: temp path not found");
         if (++temp_path_fail_count_ < kMaxTempPathFailures)
         {
           return false;
         }
-
-        // fail-safe: planner failed too many times in a row, step 1 m in a random direction to get out of the deadlock
         ROS_ERROR("[MrsExplorer]: temp path not found %d times in a row, flying 1 m in a random direction", temp_path_fail_count_);
         temp_path_fail_count_ = 0;
-
-        std::normal_distribution<float> gauss(0.0f, 1.0f);
-        octomath::Vector3 dir(gauss(rng_), gauss(rng_), gauss(rng_));
-        if (dir.norm() < 1e-6f)
-        {
-          dir = octomath::Vector3(1.0f, 0.0f, 0.0f);
-        }
-        dir.normalize();
-
-        const octomap::point3d random_point = start_coord + dir;
-        path.assign({start_coord, random_point});
-        sub_global_path.assign({start_coord, random_point});
+        randomStepPath(start_coord, path, sub_global_path);
         return true;
       }
-      std::vector<octomap::point3d> temp_path;
-      for (auto &p : find_path_srv.response.paths[0].points)
-      {
-        temp_path.emplace_back(p.x, p.y, p.z);
-      }
+      sub_global_path.push_back(glob_path[i]);
 
-      for (auto &p : temp_path)
+      for (const auto& p : segment)
       {
-        if (p.distance(path.back()) > _skip_path_point_distance_)
+        const double edge = p.distance(path.back());
+        if (edge <= _skip_path_point_distance_)
         {
-          path.push_back(p);
+          continue;
+        }
+        if (past_first_viewpoint && tail_length + edge >= max_tail_length)
+        {
+          // cut the overshooting edge exactly at the cap
+          path.push_back(path.back() + (p - path.back()) * static_cast<float>((max_tail_length - tail_length) / edge));
+          tail_length = max_tail_length;
+          break;
+        }
+        path.push_back(p);
+        if (past_first_viewpoint)
+        {
+          tail_length += edge;
         }
       }
-      j++;
+      past_first_viewpoint = true;
     }
+
     temp_path_fail_count_ = 0;
     return true;
   }
 
+  // calls path_planner's ~find_simplified_path_out from start to goal (planned with the given initial velocity) and returns its points in segment;
+  // false if the call or the planner fails
+  bool Explorer::findSimplifiedPath(const octomap::point3d& start, const octomap::point3d& goal, const octomath::Vector3& velocity,
+                                    std::vector<octomap::point3d>& segment)
+  {
+    path_planner::FindSimplifiedPath find_path_srv;
+    find_path_srv.request.start.x = start.x();
+    find_path_srv.request.start.y = start.y();
+    find_path_srv.request.start.z = start.z();
+    geometry_msgs::Point goal_point;
+    goal_point.x = goal.x();
+    goal_point.y = goal.y();
+    goal_point.z = goal.z();
+    find_path_srv.request.goals.push_back(goal_point);
+    find_path_srv.request.velocity.x = velocity.x();
+    find_path_srv.request.velocity.y = velocity.y();
+    find_path_srv.request.velocity.z = velocity.z();
+
+    if (!sc_path_planner_find_simplified_path_.call(find_path_srv) || !find_path_srv.response.success[0])
+    {
+      return false;
+    }
+
+    segment.clear();
+    for (const auto& p : find_path_srv.response.paths[0].points)
+    {
+      segment.emplace_back(p.x, p.y, p.z);
+    }
+    return true;
+  }
+
+  // fail-safe for buildLocalPath(): sets path and sub_global_path to a 1 m step from start_coord in a uniformly random direction
+  void Explorer::randomStepPath(const octomap::point3d& start_coord, std::vector<octomap::point3d>& path, std::vector<octomap::point3d>& sub_global_path)
+  {
+    std::normal_distribution<float> gauss(0.0f, 1.0f);
+    octomath::Vector3 dir(gauss(rng_), gauss(rng_), gauss(rng_));
+    if (dir.norm() < 1e-6f)
+    {
+      dir = octomath::Vector3(1.0f, 0.0f, 0.0f);
+    }
+    dir.normalize();
+
+    const octomap::point3d random_point = start_coord + dir;
+    path.assign({start_coord, random_point});
+    sub_global_path.assign({start_coord, random_point});
+  }
+
   // trims the leading (already-occupied) start point and commits path into path_ (new id); sets goal_ to the first tour viewpoint (sub_global_path[1])
   // and next_goal_ to the path's end, which nearGoal() then watches; returns false if nothing is left after trimming
-  bool Explorer::finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path, const ros::Time& t0)
+  bool Explorer::finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path)
   {
     path.erase(path.begin());
     path_.points = path;
@@ -660,8 +939,6 @@ namespace explorer
       goal_ = sub_global_path[1]; // path_.points.back();
       next_goal_ = path.back();
       first_path_planend_ = true;
-      ros::Duration dt = ros::Time::now() - t0;
-      ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: time to replan %.1fms", dt.toNSec()/1000000.0);
       return true;
     }
 
@@ -673,6 +950,9 @@ namespace explorer
   // nullopt on failure
   std::optional<mrs_msgs::TrajectoryReference> Explorer::makeTrajectory(const Path_t& path)
   {
+    // phase timing, logged indented beneath pathAndTrajectory()'s makeTrajectory line
+    ros::WallTime t_checkpoint = ros::WallTime::now();
+
     mrs_msgs::GetPathSrv srv_get_path;
     auto octree_frame = mrs_lib::get_mutexed(mutex_octree_, octree_frame_);
     srv_get_path.request.path.header.frame_id = octree_frame;
@@ -681,16 +961,27 @@ namespace explorer
     srv_get_path.request.path.relax_heading   = true;
     srv_get_path.request.path.use_heading     = false;
 
-    for (auto &point : path.points)
+    // requested path length (sum of waypoint-to-waypoint distances), for the get_path timing print
+    double path_length = 0.0;
+    for (size_t i = 0; i < path.points.size(); i++)
     {
+      const auto& point = path.points[i];
       mrs_msgs::Reference reference;
       reference.position.x = point.x();
       reference.position.y = point.y();
       reference.position.z = point.z();
       srv_get_path.request.path.points.push_back(reference);
+      if (i > 0)
+      {
+        path_length += point.distance(path.points[i-1]);
+      }
     }
+    // ROS_INFO("[MrsExplorer]:   request        %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    // t_checkpoint = ros::WallTime::now();
 
     bool success = sc_get_trajectory_.call(srv_get_path);
+    const double get_path_ms = 1000 * (ros::WallTime::now() - t_checkpoint).toSec();
+    ROS_INFO("[MrsExplorer]:   trajectory length %.2fm, %.3fms/m", path_length, path_length > 0.0 ? get_path_ms / path_length : 0.0);
 
     if (!success) {
       ROS_WARN("[MrsExplorer]: service call for trajectory failed");
@@ -962,13 +1253,36 @@ namespace explorer
     map_ready_  = true;
 
   }
-  // sets tsp_ready_ on the first frontier message, which unblocks timerReplanner(); the payload is not used here
-  // (tsp_solver consumes the same topic itself)
+  // caches every frontier's viewpoints (by id) for refineLocalTour(), records the frontier count for the end-of-exploration check, and sets tsp_ready_ on the first frontier message, which unblocks
+  // timerReplanner() (tsp_solver consumes the same topic itself for the global tour)
   void Explorer::callbackFrontiers(const frontier_detector::FrontierArray::ConstPtr msg)
   {
     if (!is_initialized_) {
       return;
     }
+
+    std::unordered_map<unsigned long, std::vector<Viewpoint_t>> frontier_viewpoints;
+    frontier_viewpoints.reserve(msg->frontiers.size());
+    for (const auto& f : msg->frontiers)
+    {
+      auto& vps = frontier_viewpoints[f.id];
+      vps.reserve(f.viewpoints.size());
+      for (const auto& v : f.viewpoints)
+      {
+        vps.push_back({octomap::point3d(v.position.x, v.position.y, v.position.z), v.coverage});
+      }
+    }
+    {
+      std::scoped_lock lock(mutex_frontier_viewpoints_);
+      frontier_viewpoints_ = std::move(frontier_viewpoints);
+    }
+
+    num_frontiers_ = msg->frontiers.size();
+    if (!msg->frontiers.empty())
+    {
+      had_frontiers_ = true;
+    }
+
     tsp_ready_ = true;
   }
 

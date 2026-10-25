@@ -17,5 +17,6 @@
   <depend>octomap_ros</depend>
   <depend>mrs_lib</depend>
   <depend>mrs_msgs</depend>
+  <depend>std_msgs</depend>
 
 </package>

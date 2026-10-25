@@ -73,11 +73,12 @@ mrs_uav_trajectory_generation:
   check_trajectory_deviation:
     max_deviation: 0.15 # [m]
     first_segment: false
+    max_iterations: 2
 
   # allows to neglect waypoints in the original path if the new path
   # does not violate max distance from the original path.
   # This makes for similar but sparser paths, which are easier for the
   # trajectory generator to work with.
   path_straightener:
-    enabled: false
+    enabled: true
     max_deviation: 0.10 # [m]

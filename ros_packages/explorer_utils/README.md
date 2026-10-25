@@ -13,12 +13,17 @@ against and call with the `explorer_utils::` namespace prefix.
 
 ## ROS interface
 
-This package exposes **no ROS interface of its own** — it publishes no topics, subscribes to no
-topics, and advertises no services or actions. It is a plain linked library (no nodelet, no node
-executable); its `getPosition()`/`getFullStatePrediction()` helpers take already-constructed
+This package has **no node, nodelet, or fixed topics/services of its own**. It is a plain linked
+library; its `getPosition()`/`getFullStatePrediction()` helpers take already-constructed
 `mrs_lib::SubscribeHandler` objects owned by the *calling* nodelet as arguments, they do not create
-their own subscriptions. Consuming packages (`explorer`, `frontier_detector`) own all
-actual ROS communication.
+their own subscriptions. The one optional ROS interface is the header-only `TimingPublisher`
+helper (`timing.hpp`), which publishes in the *caller's* namespace:
+
+| Topic | Type | Direction | Description |
+|-------|------|-----------|-------------|
+| `<nodehandle ns>/timing/<name>` | `std_msgs/Float64` | published | timing measurement in ms; one topic per `<name>`, advertised lazily on first use (queue size 10) |
+
+Consuming packages (`explorer`, `frontier_detector`) own all other ROS communication.
 
 ## Important functions/types
 
@@ -35,6 +40,13 @@ Types:
   voxel.
 - `NEIGHBOUR_OFFSETS` — `const std::array<NeighbourOffset, 26>` of the offsets to a voxel's
   neighbours in a 3x3x3 block, excluding itself.
+
+Classes (`timing.hpp`, header-only):
+- `TimingPublisher` — constructed from a `ros::NodeHandle` (topics go under its `timing/` sub-namespace;
+  default-constructed instance is also allowed). `publish(name, ms)` publishes a `std_msgs/Float64`
+  on `timing/<name>`, lazily advertising one publisher per name; `publishSince(name, ros::WallTime start)`
+  publishes and returns the wall-clock ms elapsed since `start`. Mutex-protected, so safe to call
+  from multiple threads/callbacks.
 
 Functions:
 - `getColor(int i)` — returns a color from a small fixed palette, cycling every 15 indices.
@@ -84,7 +96,8 @@ explorer_utils/
 ├── package.xml                             # catkin package manifest / dependency declarations
 ├── include/
 │   └── explorer_utils/
-│       └── utils.hpp                       # public API: AABB/color/path_info types, distance_funcion_t, and all free-function declarations
+│       ├── utils.hpp                       # public API: AABB/color/path_info types, distance_funcion_t, and all free-function declarations
+│       └── timing.hpp                      # header-only TimingPublisher (named timing measurements as Float64 topics)
 └── src/
     └── utils.cpp                           # implementation of every function declared in utils.hpp
 ```
@@ -101,6 +114,7 @@ From `package.xml` / `CMakeLists.txt`:
   `getPosition()`/`getFullStatePrediction()` to read and transform the UAV's tracker command.
 - `mrs_msgs` — message types (`ReferenceStamped`, `TrackerCommand`, `ControlManagerDiagnostics`,
   `MpcPredictionFullState`) consumed/produced by `getPosition()`/`getFullStatePrediction()`.
+- `std_msgs` — `Float64`, published by `TimingPublisher`.
 - `octomap` (via `find_package(octomap REQUIRED)`) — the actual octree data structure
   (`octomap::OcTree`, `octomap::point3d`, `octomap::OcTreeKey`) that most of this library's
   geometry/free-space functions operate on.

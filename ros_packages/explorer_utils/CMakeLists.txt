@@ -17,6 +17,7 @@ set(CATKIN_DEPENDENCIES
   octomap_ros
   mrs_lib
   mrs_msgs
+  std_msgs
   )
 
 set(LIBRARIES

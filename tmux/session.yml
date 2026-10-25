@@ -16,7 +16,7 @@ pre_window: 'export UAV_NAME=uav1; export RUN_TYPE=simulation; export UAV_TYPE=x
             WORLD_TYPE=$(sed -n "s/^world_type: *\"\(.*\)\"/\1/p" "${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml");
             SKELETON_DATA_DIR=$PROJECT_DIR/ros_packages/skeleton_estimator/data/$WORLD_TYPE'
 
-startup_window: skeleton
+startup_window: explorer
 windows:
   - roscore:
       layout: tiled

@@ -18,7 +18,7 @@ frontiers:
     sample_attempts: 32
     sample_radius: 3.5
     sample_height: 2.0
-    max_distance: 3.8
+    max_distance: 4.8
     max_angle: 0.75 # ~= pi/4
     max_count: 8
     min_coverage: 8

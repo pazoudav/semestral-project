@@ -147,7 +147,7 @@ namespace tsp_solver
     return true;
   }
 
-  // Service handler: runs TSPsolver::solve for the given start velocity/heading and returns the ordered viewpoint tour as a Point[] path.
+  // Service handler: runs TSPsolver::solve for the given start velocity/heading and returns the ordered viewpoint tour as a Point[] path (plus the parallel frontier ids).
   bool Solver::callbackSolve(tsp_solver::Solve::Request&  req,
                               tsp_solver::Solve::Response& res)
   {
@@ -162,7 +162,8 @@ namespace tsp_solver
     ros::WallTime t_checkpoint = ros::WallTime::now();
     ros::WallTime t_total      = ros::WallTime::now();
 
-    std::vector<octomap::point3d> path = tsp_solver_->solve(velocity);
+    std::vector<unsigned long>    ids;
+    std::vector<octomap::point3d> path = tsp_solver_->solve(velocity, ids);
     float time = 1000 * (ros::WallTime::now() - t_checkpoint).toSec();
     ROS_INFO("[Solver]: callbackSolve solve %4.3fms,", time);
     ROS_INFO("[Solver]: path size:          %lu,", path.size());
@@ -176,6 +177,10 @@ namespace tsp_solver
       point.y = p.y();
       point.z = p.z();
       res.path.push_back(point);
+    }
+    for (auto id : ids)
+    {
+      res.ids.push_back(static_cast<uint32_t>(id));
     }
     // ROS_INFO("[Solver]: callbackSolve build_resp %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 

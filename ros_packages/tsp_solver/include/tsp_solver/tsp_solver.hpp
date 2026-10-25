@@ -144,8 +144,8 @@ public:
 
     // Entry point used by the nodelet: snapshots the distance graph (briefly under mutex_dist_graph_),
     // then runs LKH against that snapshot (under mutex_solve_ only, so it doesn't block frontier/start
-    // updates) and returns the ordered viewpoint positions.
-    std::vector<octomap::point3d> solve(octomath::Vector3 velocity);
+    // updates) and returns the ordered viewpoint positions; ids receives the node (frontier) id of each returned position.
+    std::vector<octomap::point3d> solve(octomath::Vector3 velocity, std::vector<unsigned long>& ids);
     // Reconciles the distance graph with an incoming FrontierArray: drops nodes for frontiers no longer present and adds/distances new ones.
     void syncFrontiers(const frontier_detector::FrontierArray::ConstPtr& msg);
     // (Re)sets the start/current-position node (id START_ID, always index 0) and recomputes its distances to every other node.
