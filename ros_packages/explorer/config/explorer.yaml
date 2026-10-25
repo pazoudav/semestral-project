@@ -1,5 +1,5 @@
 planning:
-  replanning_distance: 0.6
+  # replanning_distance: 0.6 # unused, replaced by latency-based goalWithinLatency()
   skip_path_point_distance: 0.4
   max_length_after_first_viewpoint: 2.0 # [m] path_ (and so the trajectory_generation request) is cut this far past the first tour viewpoint (arc length)
   flight_free_distance: 0.6

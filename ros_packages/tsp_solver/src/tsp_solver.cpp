@@ -525,6 +525,15 @@ double TSPsolver::tourLength(const std::vector<int>& tour) const
 // (the result that is returned) and once without, purely to log both tour lengths for comparison.
 std::vector<int> TSPsolver::LKHSolve()
 {
+  /* LKH errors out on trivial instances; with just the start (index 0) and at most one viewpoint the tour is fixed */
+  const int n = static_cast<int>(cost_matrix_.rows());
+  if (n <= 2)
+  {
+    std::vector<int> trivial(n);
+    std::iota(trivial.begin(), trivial.end(), 0);
+    return trivial;
+  }
+
   /* write problem file */
   GlobalProblemWrite(cost_matrix_);
   /* seed LKH with the previous tour's tail + a greedy front half (pure greedy on the first solve) */

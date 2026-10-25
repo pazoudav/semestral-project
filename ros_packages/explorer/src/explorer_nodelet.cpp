@@ -73,7 +73,7 @@ namespace explorer
     std::string _uav_name_;
 
     // params
-    double _replanning_distance_;
+    // double _replanning_distance_;
     double _flight_free_distance_;
     double _skip_path_point_distance_;
     double _max_length_after_first_viewpoint_;
@@ -134,7 +134,7 @@ namespace explorer
     std::atomic<size_t> num_frontiers_{0};
     std::atomic<bool>   had_frontiers_{false};
     std::atomic<bool>   exploration_finished_{false};
-    bool              first_path_planend_;
+    // bool              first_path_planend_;
     bool              bv_map_frame_set_;
     bool              braking_;
     // fail-safe: consecutive "temp path not found" failures in buildLocalPath(); after kMaxTempPathFailures a 1 m random-direction step is flown instead
@@ -211,7 +211,8 @@ namespace explorer
     bool  getCurrentStateAndPrediction(octomap::point3d& start_coord, mrs_msgs::MpcPredictionFullState& prediction, octomath::Vector3& velocity);
     void  compensateLatency(const mrs_msgs::MpcPredictionFullState& prediction, octomap::point3d& start_coord, octomath::Vector3& velocity);
     bool  checkImminentCollision(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
-    bool  nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    // bool  nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction);
+    bool  goalWithinLatency(const mrs_msgs::MpcPredictionFullState& prediction);
     bool  checkStuck(const octomap::point3d& start_coord);
     bool  solveTsp(const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path, std::vector<unsigned long>& tour_ids);
     void  refineLocalTour(const octomap::point3d& start_coord, const octomath::Vector3& velocity, std::vector<octomap::point3d>& glob_path,
@@ -246,7 +247,7 @@ namespace explorer
 
     param_loader.loadParam("uav_name", _uav_name_);
 
-    param_loader.loadParam("planning/replanning_distance",_replanning_distance_);
+    // param_loader.loadParam("planning/replanning_distance",_replanning_distance_);
     param_loader.loadParam("planning/flight_free_distance",_flight_free_distance_);
     param_loader.loadParam("planning/skip_path_point_distance",_skip_path_point_distance_);
     param_loader.loadParam("planning/max_length_after_first_viewpoint", _max_length_after_first_viewpoint_);
@@ -323,7 +324,7 @@ namespace explorer
     map_update_ = false;
     map_ready_ = false;
     tsp_ready_ = false;
-    first_path_planend_ = false;
+    // first_path_planend_ = false;
     braking_ = false;
 
     latency_estimate_ = _latency_compensation_;
@@ -355,7 +356,7 @@ namespace explorer
   // - once finished (sticky): does nothing; it becomes finished when frontier_detector has no frontiers left (after having had some) and
   //   checkStuck() reports the UAV is not moving, which sets exploration_finished_ and publishes true on exploration_finished_out
   // - STATE_IDLE: requestReplan() (retried every tick, rate-limited by planning/replan_request_cooldown, until a replan succeeds)
-  // - STATE_TRAJ_EXEC: requestReplan() once nearGoal() or checkTrajectoryCollision() fires on the current MPC prediction,
+  // - STATE_TRAJ_EXEC: requestReplan() once goalWithinLatency() or checkTrajectoryCollision() fires on the current MPC prediction,
   //   or forces STATE_IDLE if checkStuck() reports no progress
   // - any other state (STATE_PATH_PLANNING, i.e. a replan already in flight): does nothing
   void Explorer::timerReplanner([[maybe_unused]] const ros::TimerEvent& evt)
@@ -412,7 +413,7 @@ namespace explorer
       return;
     }
 
-    if (nearGoal(start_coord, prediction))
+    if (goalWithinLatency(prediction))
     {
       ROS_WARN_THROTTLE(0.5, "[MrsExplorer]: goal reached -> replanning");
       requestReplan();
@@ -932,7 +933,7 @@ namespace explorer
   }
 
   // trims the leading (already-occupied) start point and commits path into path_ (new id); sets goal_ to the first tour viewpoint (sub_global_path[1])
-  // and next_goal_ to the path's end, which nearGoal() then watches; returns false if nothing is left after trimming
+  // and next_goal_ to the path's end, which goalWithinLatency() then watches; returns false if nothing is left after trimming
   bool Explorer::finalizePath(std::vector<octomap::point3d>& path, const std::vector<octomap::point3d>& sub_global_path)
   {
     path.erase(path.begin());
@@ -943,7 +944,7 @@ namespace explorer
     {
       goal_ = sub_global_path[1]; // path_.points.back();
       next_goal_ = path.back();
-      first_path_planend_ = true;
+      // first_path_planend_ = true;
       return true;
     }
 
@@ -1024,23 +1025,64 @@ namespace explorer
     return true;
   }
 
-    // returns true once the UAV is within planning/replanning_distance of goal_ (first tour viewpoint) or next_goal_ (end of path_), i.e. a replan is due;
-  // before the first successful plan, goal_/next_goal_ are pinned to the current position so this returns true immediately
-  bool Explorer::nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
+  // returns true once the earlier of goal_ (first tour viewpoint) / next_goal_ (end of path_) is reached within 2x latency_estimate_ (plus one
+  // timer_rates/fast tick) along the MPC prediction, so the new trajectory takes over right at the goal; "reached" = the prediction sample closest
+  // to the goal over the full horizon (a goal beyond the horizon puts that at the last sample, i.e. not yet due)
+  bool Explorer::goalWithinLatency(const mrs_msgs::MpcPredictionFullState& prediction)
   {
-    if (!first_path_planend_){
-      goal_ = start_coord;
-      next_goal_ = goal_;
-      // ros::Duration(5.0).sleep();
-    }
-    geometry_msgs::Point p = prediction.position.back();
-    if (start_coord.distance(goal_) > _replanning_distance_ && start_coord.distance(next_goal_) > _replanning_distance_) // octomap::point3d(p.x,p.y,p.z)
+    ros::WallTime t_start = ros::WallTime::now();
+
+    const std::size_t n = prediction.position.size();
+    if (n == 0 || prediction.stamps.size() != n)
     {
-      ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, too far from goal %f", start_coord.distance(octomap::point3d(p.x,p.y,p.z)));
+      return false;
+    }
+
+    // time from the prediction's first stamp to its sample closest to goal
+    auto time_to_goal = [&](const octomap::point3d& goal) {
+      double min_dist = std::numeric_limits<double>::infinity();
+      double t_min    = 0.0;
+      for (std::size_t k = 0; k < n; k++)
+      {
+        const double d = goal.distance(octomap::point3d(prediction.position[k].x, prediction.position[k].y, prediction.position[k].z));
+        if (d < min_dist)
+        {
+          min_dist = d;
+          t_min    = (prediction.stamps[k] - prediction.stamps[0]).toSec();
+        }
+      }
+      return t_min;
+    };
+
+    const double t_goal  = std::min(time_to_goal(goal_), time_to_goal(next_goal_));
+    const double t_ahead = 2.0 * latency_estimate_ + 1.0 / _rate_fast_timer_;
+    const double calc_ms = timing_->publishSince("goalWithinLatency/total", t_start);
+
+    if (t_goal > t_ahead)
+    {
+      ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, goal in %.2fs (replan at %.2fs), computed in %.3fms", t_goal, t_ahead, calc_ms);
       return false;
     }
     return true;
   }
+
+  // // returns true once the UAV is within planning/replanning_distance of goal_ (first tour viewpoint) or next_goal_ (end of path_), i.e. a replan is due;
+  // // before the first successful plan, goal_/next_goal_ are pinned to the current position so this returns true immediately
+  // bool Explorer::nearGoal(const octomap::point3d& start_coord, const mrs_msgs::MpcPredictionFullState& prediction)
+  // {
+  //   if (!first_path_planend_){
+  //     goal_ = start_coord;
+  //     next_goal_ = goal_;
+  //     // ros::Duration(5.0).sleep();
+  //   }
+  //   geometry_msgs::Point p = prediction.position.back();
+  //   if (start_coord.distance(goal_) > _replanning_distance_ && start_coord.distance(next_goal_) > _replanning_distance_) // octomap::point3d(p.x,p.y,p.z)
+  //   {
+  //     ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: not planning, too far from goal %f", start_coord.distance(octomap::point3d(p.x,p.y,p.z)));
+  //     return false;
+  //   }
+  //   return true;
+  // }
 
   // returns true once the UAV has moved less than planning/stuck_distance for planning/stuck_duration seconds straight (timerReplanner() then forces
   // STATE_IDLE); tracker is (re)armed by stuck_check_reset_, which requestReplan() sets whenever a new trajectory execution actually starts
