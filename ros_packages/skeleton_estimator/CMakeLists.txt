@@ -24,6 +24,7 @@ set(CATKIN_DEPENDENCIES
   visualization_msgs
   pcl_conversions
   pcl_ros
+  explorer_utils
 )
 
 set(LIBRARIES

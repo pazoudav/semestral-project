@@ -19,6 +19,7 @@
 
 #include <frontier_detector/frontier_detector.hpp>
 #include <explorer_utils/utils.hpp>
+#include <explorer_utils/timing.hpp>
 #include <frontier_detector/FrontierArray.h>
 
 #include <optional>
@@ -108,6 +109,8 @@ namespace frontier_detector
 
       std::unique_ptr<FrontierDetector> frontier_detector_;
       std::unique_ptr<mrs_lib::Transformer> transformer_;
+      // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
+      std::unique_ptr<explorer_utils::TimingPublisher> timing_;
 
       // background visualization worker: keeps all bv_frontiers_ marker construction + publish() off the octomap-callback thread.
       // only ever touched by visualizationWorker() itself once started, so bv_frontiers_/bv_map_frame_set_ need no locking there.
@@ -166,6 +169,7 @@ namespace frontier_detector
 
     ROS_INFO("[FrontierDetectorNodelet]: initializing...");
     nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+    timing_ = std::make_unique<explorer_utils::TimingPublisher>(nh_);
 
     mrs_lib::ParamLoader param_loader(nh_, "FrontierDetector");
 
@@ -236,7 +240,8 @@ namespace frontier_detector
                                                            _viewpoint_max_distance_,
                                                            _viewpoint_max_angle_,
                                                            _max_viewpoint_cnt_,
-                                                           _min_viewpoint_coverage_);
+                                                           _min_viewpoint_coverage_,
+                                                           nh_);
 
     flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_x_/2.0, -_flight_zone_width_y_/2.0, _flight_zone_floor_),
                     .max=octomap::point3d( _flight_zone_width_x_/2.0,  _flight_zone_width_y_/2.0, _flight_zone_floor_+_flight_zone_height_)};
@@ -290,7 +295,7 @@ namespace frontier_detector
       return;
     }
 
-    ROS_INFO("loadMsg    %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("loadMsg    %4.0fms,",  timing_->publishSince("callbackOctomapLocal/loadMsg", t_start));
     t_start = ros::WallTime::now();
 
     {
@@ -309,7 +314,7 @@ namespace frontier_detector
 
     map_ready_ = true;
 
-    ROS_INFO("mergeLocal %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("mergeLocal %4.0fms,",  timing_->publishSince("callbackOctomapLocal/mergeLocal", t_start));
     t_start = ros::WallTime::now();
 
     auto res = getPosition();
@@ -339,20 +344,20 @@ namespace frontier_detector
       // extract frontiers only from local area, frontiers outside cannot change
       explorer_utils::AABB local_zone = explorer_utils::localZoneFromPosition(start_coord, flight_zone_, _local_zone_width_, _local_zone_height_);
 
-      ROS_INFO("preprocess %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+      ROS_INFO("preprocess %4.0fms,",  timing_->publishSince("callbackOctomapLocal/preprocess", t_start));
       t_start = ros::WallTime::now();
 
       frontier_detector_->processNewMap(octree_.get(), local_zone, start_key);
     }
 
-    ROS_INFO("search     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("search     %4.0fms,",  timing_->publishSince("callbackOctomapLocal/search", t_start));
     t_start = ros::WallTime::now();
 
     publishFrontiers();
     enqueueVisualization();
 
-    ROS_INFO("pubAndViz  %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
-    ROS_INFO("full run   %4.0fms,",  1000*(ros::WallTime::now() - t_start_glob).toSec());
+    ROS_INFO("pubAndViz  %4.0fms,",  timing_->publishSince("callbackOctomapLocal/pubAndViz", t_start));
+    ROS_INFO("full run   %4.0fms,",  timing_->publishSince("callbackOctomapLocal/total", t_start_glob));
 
     ROS_INFO("-----------------------------------");
   }

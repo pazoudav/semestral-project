@@ -19,6 +19,7 @@
 #include <mrs_lib/service_client_handler.h>
 
 #include <explorer_utils/utils.hpp>
+#include <explorer_utils/timing.hpp>
 #include <frontier_detector/FrontierArray.h>
 #include <path_planner/FindSimplifiedPath.h>
 
@@ -45,6 +46,8 @@ class TSPsolver
 {
 private:
     /* data */
+    // per-phase wall-clock timings, published on ~timing/<function>/<phase> (ms)
+    explorer_utils::TimingPublisher timing_;
     ros::Time start_;
     ros::Duration duration_;
     Eigen::MatrixXd cost_matrix_;

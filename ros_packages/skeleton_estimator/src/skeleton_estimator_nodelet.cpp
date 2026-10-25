@@ -15,6 +15,8 @@
 #include <mrs_lib/param_loader.h>
 #include <mrs_lib/subscribe_handler.h>
 
+#include <explorer_utils/timing.hpp>
+
 #include <sensor_msgs/PointCloud2.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -50,6 +52,9 @@ public:
 private:
   ros::NodeHandle nh_;
   bool            is_initialized_ = false;
+
+  // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
+  std::unique_ptr<explorer_utils::TimingPublisher> timing_;
 
   Rosa        rosa_;
   std::string world_frame_id_;
@@ -119,6 +124,7 @@ void SkeletonEstimator::onInit()
   ros::Time::waitForValid();
   ROS_INFO("[SkeletonEstimator]: initializing...");
   nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+  timing_ = std::make_unique<explorer_utils::TimingPublisher>(nh_);
 
   mrs_lib::ParamLoader param_loader(nh_, "SkeletonEstimator");
 
@@ -395,7 +401,7 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
     return;
   }
 
-  ROS_INFO("[SkeletonEstimator]: load target     %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  ROS_INFO("[SkeletonEstimator]: load target     %4.3fms,", timing_->publishSince("targetSkeletonCallback/load_target", t_checkpoint));
   t_checkpoint = ros::WallTime::now();
 
   std::vector<std::vector<int>> candidates = std::vector<std::vector<int>>(0);
@@ -407,12 +413,12 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
     }
   }
 
-  ROS_INFO("[SkeletonEstimator]: candidates      %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  ROS_INFO("[SkeletonEstimator]: candidates      %4.3fms,", timing_->publishSince("targetSkeletonCallback/candidates", t_checkpoint));
   t_checkpoint = ros::WallTime::now();
 
   Eigen::Matrix4f T = runRANSAC(source_cloud_, target_cloud_, candidates, 2000);
 
-  ROS_INFO("[SkeletonEstimator]: ransac          %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  ROS_INFO("[SkeletonEstimator]: ransac          %4.3fms,", timing_->publishSince("targetSkeletonCallback/ransac", t_checkpoint));
   t_checkpoint = ros::WallTime::now();
 
   pcl::PointCloud<pcl::PointNormal>::Ptr transformed_pointcloud(new pcl::PointCloud<pcl::PointNormal>());
@@ -431,7 +437,7 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
   output_msg.header.stamp = ros::Time::now();
   pub_candidate_viewpoints_.publish(output_msg);
 
-  ROS_INFO("[SkeletonEstimator]: viewpoints      %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  ROS_INFO("[SkeletonEstimator]: viewpoints      %4.3fms,", timing_->publishSince("targetSkeletonCallback/viewpoints", t_checkpoint));
   t_checkpoint = ros::WallTime::now();
 
   std::vector<geometry_msgs::Point> transformed_points = std::vector<geometry_msgs::Point>(0);
@@ -468,9 +474,9 @@ void SkeletonEstimator::targetSkeletonCallback(const visualization_msgs::Marker:
 
   pub_transfomed_skeleton_.publish(lines);
 
-  ROS_INFO("[SkeletonEstimator]: skeleton        %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  ROS_INFO("[SkeletonEstimator]: skeleton        %4.3fms,", timing_->publishSince("targetSkeletonCallback/skeleton", t_checkpoint));
 
-  ROS_INFO("[SkeletonEstimator]: align total     %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
+  ROS_INFO("[SkeletonEstimator]: align total     %4.3fms,", timing_->publishSince("targetSkeletonCallback/total", t_total));
   ROS_INFO("[SkeletonEstimator]: ---------------------------");
 }
 

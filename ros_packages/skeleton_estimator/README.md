@@ -41,6 +41,7 @@ remaps used at runtime.
 | `~skeleton_vertex_ids_out` | `~/skeleton_vertex_ids` | `visualization_msgs/MarkerArray` (TEXT_VIEW_FACING) | Debug: per-vertex ID text markers, reimplemented locally instead of depending on FC-Planner's `traj_utils::PlanningVisualization`. |
 | `~transformed_skeleton_out` | `~/transformed_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The source skeleton's line points, transformed by the RANSAC alignment `T` into the target/live frame. |
 | `~candidate_viewpoints_out` | `~/candidate_viewpoints` | `sensor_msgs/PointCloud2` (PointNormal: x y z normal_x normal_y normal_z curvature) | The source's candidate viewpoints, transformed by `T` into the live frame (normals rotated and renormalized), then shifted `alignment/viewpoint_offset` meters along their normals; only the shifted points are published — feeds `tsp_solver`'s `~candidate_viewpoints_in` (remapped to `skeleton_estimator/candidate_viewpoints`), though that callback currently returns immediately without consuming it. |
+| `~timing/targetSkeletonCallback/{load_target,candidates,ransac,viewpoints,skeleton,total}` | same | `std_msgs/Float64` | Wall-clock time (ms) of each phase of `targetSkeletonCallback`, published via `explorer_utils::TimingPublisher`. |
 
 ## Important functions/classes
 
@@ -105,6 +106,7 @@ skeleton_estimator/
 From `package.xml` / `CMakeLists.txt`:
 
 - `roscpp`, `rospy`, `nodelet`, `pluginlib` — core ROS1 nodelet plumbing.
+- `explorer_utils` — `TimingPublisher` (`explorer_utils/timing.hpp`), owned by the nodelet as `timing_`.
 - `mrs_lib` — `ParamLoader`/`SubscribeHandler` used for config loading and topic subscriptions.
 - `std_msgs`, `geometry_msgs`, `sensor_msgs`, `visualization_msgs` — message types.
 - `pcl_conversions`, `pcl_ros`, and `PCL` (via `find_package(PCL REQUIRED)`) — point cloud I/O, filtering (`PassThrough`, `VoxelGrid`, `RandomSample`), normal estimation, and KD-tree search.

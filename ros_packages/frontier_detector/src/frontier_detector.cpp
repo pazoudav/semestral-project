@@ -17,7 +17,9 @@ FrontierDetector::FrontierDetector( double free_space_diameter,
                                   double viewpoint_max_distance,
                                   double viewpoint_max_angle,
                                   int    max_viewpoints_per_fr,
-                                  int    min_coverage)
+                                  int    min_coverage,
+                                  const ros::NodeHandle& nh)
+  : timing_(nh)
 {
   free_space_diameter_ = free_space_diameter;
   min_frontier_size_ = min_frontier_size;
@@ -464,17 +466,17 @@ void FrontierDetector::processNewMap(octomap::OcTree* tree, explorer_utils::AABB
     tree_ = tree;
     setZone(zone);
 
-    ROS_INFO(" - setZone    %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO(" - setZone    %4.0fms,",  timing_.publishSince("processNewMap/setZone", t_start));
     t_start = ros::WallTime::now();
 
     removeFrontiers();
 
-    ROS_INFO(" - remove     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO(" - remove     %4.0fms,",  timing_.publishSince("processNewMap/remove", t_start));
     t_start = ros::WallTime::now();
 
     std::vector<frontier_t> new_frontiers = frontierSearch(start_key);
 
-    ROS_INFO(" - search     %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO(" - search     %4.0fms,",  timing_.publishSince("processNewMap/search", t_start));
     t_start = ros::WallTime::now();
 
     int tmp = fis_c_.size();
@@ -484,12 +486,12 @@ void FrontierDetector::processNewMap(octomap::OcTree* tree, explorer_utils::AABB
       addFrontier(frontier);
     }
 
-    ROS_INFO(" - add        %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO(" - add        %4.0fms,",  timing_.publishSince("processNewMap/add", t_start));
     t_start = ros::WallTime::now();
 
     setViewpoints();
 
-    ROS_INFO(" - viewpoints %4.0fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO(" - viewpoints %4.0fms,",  timing_.publishSince("processNewMap/viewpoints", t_start));
     // t_start = ros::WallTime::now();
 
     // ROS_INFO("[FrontierDetector]: final frontier count: %zu/%zu/%zu (total/inv/add)", fis_c_.size(), invalidated_frontiers_.size(), added_frontiers_.size());

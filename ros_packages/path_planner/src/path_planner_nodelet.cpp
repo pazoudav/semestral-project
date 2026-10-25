@@ -18,6 +18,7 @@
 #include <path_planner/Path.h>
 #include <path_planner/path_planner.hpp>
 #include <explorer_utils/utils.hpp>
+#include <explorer_utils/timing.hpp>
 #include <frontier_detector/FrontierArray.h>
 
 #include <optional>
@@ -101,6 +102,8 @@ namespace path_planner
       bool                     vis_shutdown_ = false;
 
       std::unique_ptr<mrs_lib::Transformer> transformer_;
+      // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
+      std::unique_ptr<explorer_utils::TimingPublisher> timing_;
 
       // background tree cleanup worker: retired local octrees (once merged into octree_) are handed off here so that
       // freeing every node of a large OcTree happens off the octomap-callback thread instead of inside the callback itself
@@ -151,6 +154,7 @@ namespace path_planner
 
     ROS_INFO("[PathPlannerNodelet]: initializing...");
     nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+    timing_ = std::make_unique<explorer_utils::TimingPublisher>(nh_);
 
     mrs_lib::ParamLoader param_loader(nh_, "PathPlannerNodelet");
 
@@ -290,7 +294,7 @@ namespace path_planner
       }
     }
 
-    ROS_INFO("[PathPlannerNodelet]: tree diff   %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("[PathPlannerNodelet]: tree diff   %4.3fms,",  timing_->publishSince("callbackOctomap/tree_diff", t_start));
     t_start = ros::WallTime::now();
 
     {
@@ -309,7 +313,7 @@ namespace path_planner
 
     map_ready_ = true;
 
-    ROS_INFO("[PathPlannerNodelet]: tree update %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("[PathPlannerNodelet]: tree update %4.3fms,",  timing_->publishSince("callbackOctomap/tree_update", t_start));
     t_start = ros::WallTime::now();
 
     if (!diff.empty()) {
@@ -317,11 +321,11 @@ namespace path_planner
       path_planner_->updateRoadmap(*octree_, diff);
     }
 
-    ROS_INFO("[PathPlannerNodelet]: RM update   %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("[PathPlannerNodelet]: RM update   %4.3fms,",  timing_->publishSince("callbackOctomap/roadmap_update", t_start));
 
     enqueueVisualization();
     
-    ROS_INFO("[PathPlannerNodelet]: tree done   %4.3fms,",  1000*(ros::WallTime::now() - t_start_g).toSec());
+    ROS_INFO("[PathPlannerNodelet]: tree done   %4.3fms,",  timing_->publishSince("callbackOctomap/total", t_start_g));
     ROS_INFO("[PathPlannerNodelet]: --------------------------");
     // t_start = ros::WallTime::now();
 
@@ -395,12 +399,12 @@ namespace path_planner
       }
     }
 
-    ROS_INFO("[PathPlannerNodelet]: preprocess %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("[PathPlannerNodelet]: preprocess %4.3fms,",  timing_->publishSince("callbackFindSimplifiedPath/preprocess", t_start));
     t_start = ros::WallTime::now();
 
     const std::unordered_map<NodeId, PathResult> results = path_planner_->shortestPaths(*start_id, unique_goal_ids);
 
-    ROS_INFO("[PathPlannerNodelet]: serach     %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("[PathPlannerNodelet]: serach     %4.3fms,",  timing_->publishSince("callbackFindSimplifiedPath/search", t_start));
     t_start = ros::WallTime::now();
 
     const auto& nodes = path_planner_->nodes();
@@ -443,10 +447,10 @@ namespace path_planner
       res.success[i] = res.paths[i].points.size() > 1;
     }
 
-    ROS_INFO("[PathPlannerNodelet]: simplify   %4.3fms,",  1000*(ros::WallTime::now() - t_start).toSec());
+    ROS_INFO("[PathPlannerNodelet]: simplify   %4.3fms,",  timing_->publishSince("callbackFindSimplifiedPath/simplify", t_start));
     // ROS_INFO("[PathPlannerNodelet]: callbackFindSimplifiedPath processed");
 
-    ROS_INFO("[PathPlannerNodelet]: clbckFSP   %4.3fms,",  1000*(ros::WallTime::now() - t_start_g).toSec());
+    ROS_INFO("[PathPlannerNodelet]: clbckFSP   %4.3fms,",  timing_->publishSince("callbackFindSimplifiedPath/total", t_start_g));
     ROS_INFO("[PathPlannerNodelet]: ===========================");
     return true;
   }

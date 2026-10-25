@@ -40,6 +40,8 @@ namespace tsp_solver
       float  _dir_weight_;
 
       std::unique_ptr<TSPsolver> tsp_solver_;
+      // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
+      std::unique_ptr<explorer_utils::TimingPublisher> timing_;
 
       mrs_lib::SubscribeHandler<frontier_detector::FrontierArray> sh_frontiers_;
       mrs_lib::SubscribeHandler<sensor_msgs::PointCloud2>          sh_candidate_viewpoints_;
@@ -64,6 +66,7 @@ namespace tsp_solver
 
     ROS_INFO("[Solver]: initializing...");
     nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+    timing_ = std::make_unique<explorer_utils::TimingPublisher>(nh_);
 
     mrs_lib::ParamLoader param_loader(nh_, "TSPsolver");
 
@@ -110,7 +113,7 @@ namespace tsp_solver
 
     tsp_solver_->syncFrontiers(msg);
 
-    ROS_INFO_THROTTLE(2.0, "[Solver]: callbackFrontiers total %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
+    ROS_INFO_THROTTLE(2.0, "[Solver]: callbackFrontiers total %4.3fms,", timing_->publishSince("callbackFrontiers/total", t_total));
     // ROS_INFO_THROTTLE(2.0, "[Solver]: ---------------------------");
   }
 
@@ -142,7 +145,7 @@ namespace tsp_solver
     tsp_solver_->setStart(octomap::point3d(req.position.x, req.position.y, req.position.z));
     res.success = true;
 
-    ROS_INFO("[Solver]: callbackSetStart total %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
+    ROS_INFO("[Solver]: callbackSetStart total %4.3fms,", timing_->publishSince("callbackSetStart/total", t_total));
     // ROS_INFO("[Solver]: ---------------------------");
     return true;
   }
@@ -164,7 +167,7 @@ namespace tsp_solver
 
     std::vector<unsigned long>    ids;
     std::vector<octomap::point3d> path = tsp_solver_->solve(velocity, ids);
-    float time = 1000 * (ros::WallTime::now() - t_checkpoint).toSec();
+    float time = timing_->publishSince("callbackSolve/solve", t_checkpoint);
     ROS_INFO("[Solver]: callbackSolve solve %4.3fms,", time);
     ROS_INFO("[Solver]: path size:          %lu,", path.size());
     ROS_INFO("[Solver]: time per node:      %4.3fms/node,", time/path.size());
@@ -182,6 +185,7 @@ namespace tsp_solver
     {
       res.ids.push_back(static_cast<uint32_t>(id));
     }
+    timing_->publishSince("callbackSolve/build_resp", t_checkpoint);
     // ROS_INFO("[Solver]: callbackSolve build_resp %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 
     res.success = res.path.size() > 1;
@@ -189,6 +193,7 @@ namespace tsp_solver
       res.message = "TSP tour not found";
     }
 
+    timing_->publishSince("callbackSolve/total", t_total);
     // ROS_INFO("[Solver]: callbackSolve total      %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
     // ROS_INFO("[Solver]: ---------------------------");
     return true;

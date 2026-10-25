@@ -37,6 +37,7 @@
 #include <set>
 
 #include <explorer_utils/utils.hpp>
+#include <explorer_utils/timing.hpp>
 #include <frontier_detector/FrontierArray.h>
 #include <tsp_solver/SetStart.h>
 #include <tsp_solver/Solve.h>
@@ -200,6 +201,9 @@ namespace explorer
 
     std::unique_ptr<mrs_lib::Transformer> transformer_;
 
+    // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
+    std::unique_ptr<explorer_utils::TimingPublisher> timing_;
+
     std::optional<mrs_msgs::ReferenceStamped_<std::allocator<void> >> getPosition();
     std::optional<mrs_msgs::MpcPredictionFullState>                   getFullStatePrediction();
     std::optional<OcTreeSharedPtr_t>                                  msgToMap(const octomap_msgs::OctomapConstPtr octomap);
@@ -232,6 +236,7 @@ namespace explorer
   void Explorer::onInit()
   {
     nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+    timing_ = std::make_unique<explorer_utils::TimingPublisher>(nh_);
 
     ros::Time::waitForValid();
 
@@ -494,7 +499,7 @@ namespace explorer
     {
       return false;
     }
-    ROS_INFO("[MrsExplorer]: makePath         %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]: makePath         %8.3fms", timing_->publishSince("pathAndTrajectory/makePath", t_checkpoint));
     t_checkpoint = ros::WallTime::now();
 
     for (int i=0; i+1<path_.points.size(); i++)
@@ -505,7 +510,7 @@ namespace explorer
     }
     bv_path_->publish();
     bv_path_->clearBuffers();
-    ROS_INFO("[MrsExplorer]: visualize        %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]: visualize        %8.3fms", timing_->publishSince("pathAndTrajectory/visualize", t_checkpoint));
     t_checkpoint = ros::WallTime::now();
 
 
@@ -516,7 +521,7 @@ namespace explorer
       ROS_WARN("[MrsExplorer]: trajectory generation falied");
       return false;
     }
-    ROS_INFO("[MrsExplorer]: makeTrajectory   %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]: makeTrajectory   %8.3fms", timing_->publishSince("pathAndTrajectory/makeTrajectory", t_checkpoint));
     t_checkpoint = ros::WallTime::now();
 
     if (!publishTrajectory(*trajectory, path_.id))
@@ -524,7 +529,7 @@ namespace explorer
       ROS_WARN("[MrsExplorer]: trajectory reference publishing failed");
       return false;
     }
-    ROS_INFO("[MrsExplorer]: publish          %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]: publish          %8.3fms", timing_->publishSince("pathAndTrajectory/publish", t_checkpoint));
 
     // ROS_WARN("[MrsExplorer]: trajectory replan succesfull");
 
@@ -536,7 +541,7 @@ namespace explorer
       latency_estimate_ = _latency_ema_alpha_*dt.toSec() + (1.0 - _latency_ema_alpha_)*latency_estimate_;
     }
 
-    ROS_INFO("[MrsExplorer]: total            %8.3fms (sim %.1fms), latency estimate %.1fms", 1000 * (ros::WallTime::now() - t_total).toSec(), dt.toSec()*1000.0, latency_estimate_*1000.0);
+    ROS_INFO("[MrsExplorer]: total            %8.3fms (sim %.1fms), latency estimate %.1fms", timing_->publishSince("pathAndTrajectory/total", t_total), dt.toSec()*1000.0, latency_estimate_*1000.0);
     ROS_INFO("[MrsExplorer]: ---------------------------");
     return true;
   }
@@ -577,14 +582,14 @@ namespace explorer
     }
 
     visualizeGlobalPath(glob_path);
-    ROS_INFO("[MrsExplorer]:   tsp            %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]:   tsp            %8.3fms", timing_->publishSince("makePath/tsp", t_checkpoint));
     t_checkpoint = ros::WallTime::now();
 
     if (_refine_enabled_)
     {
       refineLocalTour(start_coord, velocity, glob_path, tour_ids);
     }
-    ROS_INFO("[MrsExplorer]:   refine         %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]:   refine         %8.3fms", timing_->publishSince("makePath/refine", t_checkpoint));
     t_checkpoint = ros::WallTime::now();
 
     std::vector<octomap::point3d> path(0);
@@ -594,7 +599,7 @@ namespace explorer
       ROS_ERROR("[MrsExplorer]: local path build failed, replan local path");
       return false;
     }
-    ROS_INFO("[MrsExplorer]:   local path     %8.3fms", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+    ROS_INFO("[MrsExplorer]:   local path     %8.3fms", timing_->publishSince("makePath/local_path", t_checkpoint));
 
     bool succ = finalizePath(path, sub_global_path);
     if (!succ){
@@ -980,7 +985,7 @@ namespace explorer
     // t_checkpoint = ros::WallTime::now();
 
     bool success = sc_get_trajectory_.call(srv_get_path);
-    const double get_path_ms = 1000 * (ros::WallTime::now() - t_checkpoint).toSec();
+    const double get_path_ms = timing_->publishSince("makeTrajectory/get_path", t_checkpoint);
     ROS_INFO("[MrsExplorer]:   trajectory length %.2fm, %.3fms/m", path_length, path_length > 0.0 ? get_path_ms / path_length : 0.0);
 
     if (!success) {

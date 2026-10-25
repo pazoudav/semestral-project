@@ -23,6 +23,7 @@ All topic/service names below are the private (`~`) names used in `src/explorer_
 |---|---|---|---|
 | `~reference_out` | `control_manager/reference` | `mrs_msgs/ReferenceStamped` | advertised in `onInit()` and remapped in `explorer.launch`, but `pub_reference_.publish()` is never called anywhere in the file — dead output |
 | `~exploration_finished_out` | `~exploration_finished` | `std_msgs/Bool` | latched, queue 1; `false` at init, `true` once when `timerReplanner()` detects the end of exploration (no frontiers left after having had some, and the UAV not moving). Intended for external scripts that automate/evaluate runs |
+| `~timing/<function>/<phase>` | — | `std_msgs/Float64` | wall-clock timings in ms, published through an `explorer_utils::TimingPublisher` (`timing_`, `explorer_utils/timing.hpp`, built on the private `nh_`) alongside the `ROS_INFO` timing logs. Topics: `pathAndTrajectory/{makePath,visualize,makeTrajectory,publish,total}`, `makePath/{tsp,refine,local_path}`, `makeTrajectory/get_path` |
 | `visualize_path` (via `mrs_lib::BatchVisualizer bv_path_`) | — | `visualization_msgs/Marker`/`MarkerArray` (BatchVisualizer) | debug rays for the assembled local path (magenta, in `pathAndTrajectory`), the global TSP tour (green, in `visualizeGlobalPath`, called from `makePath`) and the locally refined tour segment (orange, in `refineLocalTour`) |
 
 ### Services called (client)
@@ -174,7 +175,7 @@ From `package.xml`/`CMakeLists.txt` (build-time, catkin). The package defines no
 - `nodelet`, `roscpp`, `rospy`, `pluginlib` (via `PLUGINLIB_EXPORT_CLASS`) — nodelet plumbing
 - `nav_msgs`, `std_msgs`, `geometry_msgs`, `visualization_msgs`, `sensor_msgs` — standard ROS message types
 - `Eigen3` (`find_package(Eigen3 REQUIRED)`) — used via `mrs_lib::geometry::Ray`/`BatchVisualizer` calls in `explorer_nodelet.cpp`
-- `explorer_utils` — this project's own shared geometry/octomap helper library; `explorer_nodelet.cpp` fully qualifies every call with the `explorer_utils::` prefix (`isFreeSpace`, `getPosition`, `getFullStatePrediction`, etc.) — `Explorer::getPosition()`/`Explorer::getFullStatePrediction()` are now both thin delegators to their `explorer_utils` counterparts
+- `explorer_utils` — this project's own shared geometry/octomap helper library (including `TimingPublisher`); `explorer_nodelet.cpp` fully qualifies every call with the `explorer_utils::` prefix (`isFreeSpace`, `getPosition`, `getFullStatePrediction`, etc.) — `Explorer::getPosition()`/`Explorer::getFullStatePrediction()` are now both thin delegators to their `explorer_utils` counterparts
 - `frontier_detector` — declared as a build dependency for its `FrontierArray` message type, consumed on `~frontiers_in`
 
 Runtime-only (not build dependencies, but required at runtime for `Explorer` to function — separate standalone nodelets started elsewhere, e.g. from `tmux/session.yml`):

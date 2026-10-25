@@ -12,6 +12,7 @@
 #include <cstdint>
 
 #include "frontier_detector/fis.hpp"
+#include <explorer_utils/timing.hpp>
 
 
 namespace frontier_detector
@@ -24,6 +25,8 @@ class FrontierDetector
 {
 private:
   explorer_utils::AABB zone_;
+  // per-phase processNewMap wall-clock timings, published on ~timing/processNewMap/<phase> (ms)
+  explorer_utils::TimingPublisher timing_;
   octomap::OcTreeKey min_key_;
   octomap::OcTreeKey max_key_;
   long dx_;
@@ -100,7 +103,8 @@ public:
                   double viewpoint_max_distance,
                   double viewpoint_max_angle,
                   int    max_viewpoints_per_fr,
-                  int    min_coverage);
+                  int    min_coverage,
+                  const ros::NodeHandle& nh);
   ~FrontierDetector();
 
   // full update pass for a new octomap: removes stale frontiers, BFS-extracts new frontier clusters from the given zone/start cell, and (re)samples their viewpoints

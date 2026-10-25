@@ -10,6 +10,7 @@ namespace tsp_solver
 
   // Initializes the fallback-solver time budget (nanoseconds) and default state: a single dummy start node, plus the client used to query real (roadmap) distances.
   TSPsolver::TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight)
+  : timing_(nh)
 {
   duration_ = ros::Duration(0, max_duration);
   GlobalTimeLimit_ = lkh_time_limit;
@@ -156,8 +157,8 @@ std::vector<double> TSPsolver::findPathDistances(const octomap::point3d &start, 
   if (goals.empty())
     return distances;
 
-  // ros::WallTime t_checkpoint = ros::WallTime::now();
-  // ros::WallTime t_total      = ros::WallTime::now();
+  ros::WallTime t_checkpoint = ros::WallTime::now();
+  ros::WallTime t_total      = ros::WallTime::now();
 
   path_planner::FindSimplifiedPath srv;
   srv.request.start.x = start.x();
@@ -173,8 +174,9 @@ std::vector<double> TSPsolver::findPathDistances(const octomap::point3d &start, 
     p.z = g.z();
     srv.request.goals.push_back(p);
   }
+  timing_.publishSince("findPathDistances/build_req", t_checkpoint);
   // ROS_INFO("[TSPsolver]: findPathDistances build_req    %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
-  // t_checkpoint = ros::WallTime::now();
+  t_checkpoint = ros::WallTime::now();
 
   if (!sc_find_simplified_path_.call(srv))
   {
@@ -184,8 +186,9 @@ std::vector<double> TSPsolver::findPathDistances(const octomap::point3d &start, 
     // ROS_INFO("[TSPsolver]: ---------------------------");
     return distances;
   }
+  timing_.publishSince("findPathDistances/svc_call", t_checkpoint);
   // ROS_INFO("[TSPsolver]: findPathDistances svc_call     %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
-  // t_checkpoint = ros::WallTime::now();
+  t_checkpoint = ros::WallTime::now();
 
   for (size_t i = 0; i < goals.size() && i < srv.response.success.size(); i++)
   {
@@ -203,8 +206,10 @@ std::vector<double> TSPsolver::findPathDistances(const octomap::point3d &start, 
     }
     distances[i] = length;
   }
+  timing_.publishSince("findPathDistances/parse_resp", t_checkpoint);
   // ROS_INFO("[TSPsolver]: findPathDistances parse_resp   %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
 
+  timing_.publishSince("findPathDistances/total", t_total);
   // ROS_INFO("[TSPsolver]: findPathDistances total        %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
   // ROS_INFO("[TSPsolver]: ---------------------------");
   return distances;
@@ -227,6 +232,7 @@ void TSPsolver::syncFrontiers(const frontier_detector::FrontierArray::ConstPtr& 
   {
     incoming_ids.insert(f.id);
   }
+  timing_.publishSince("syncFrontiers/incoming_ids", t_checkpoint);
   // ROS_INFO("[TSPsolver]: syncFrontiers incoming_ids  %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
 
@@ -239,6 +245,7 @@ void TSPsolver::syncFrontiers(const frontier_detector::FrontierArray::ConstPtr& 
   for (auto id : removed_ids)
     removeNode(id);
 
+  timing_.publishSince("syncFrontiers/prune_removed", t_checkpoint);
   // ROS_INFO("[TSPsolver]: syncFrontiers prune_removed %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
   // ROS_INFO("[TSPsolver]: syncFrontiers removed %lu frontiers", removed_ids.size());
@@ -267,8 +274,10 @@ void TSPsolver::syncFrontiers(const frontier_detector::FrontierArray::ConstPtr& 
     }
   }
 
+  timing_.publishSince("syncFrontiers/add_new", t_checkpoint);
   // ROS_INFO("[TSPsolver]: syncFrontiers add_new       %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   // ROS_INFO("[TSPsolver]: syncFrontiers added %d frontiers", add_cnt);
+  timing_.publishSince("syncFrontiers/total", t_total);
   // ROS_INFO_THROTTLE(2.0,"[TSPsolver]: syncFrontiers total         %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
   // ROS_INFO("[TSPsolver]: ---------------------------");
 }
@@ -290,10 +299,12 @@ void TSPsolver::setStart(octomap::point3d position)
   positions.reserve(nodes_.size() - 1);
   for (size_t i = 1; i < nodes_.size(); i++)
     positions.push_back(nodes_[i].position);
+  timing_.publishSince("setStart/gather_ids", t_checkpoint);
   // ROS_INFO("[TSPsolver]: setStart gather_ids   %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
 
   std::vector<double> distances = findPathDistances(position, positions);
+  timing_.publishSince("setStart/find_dists", t_checkpoint);
   // ROS_INFO("[TSPsolver]: setStart find_dists   %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
   t_checkpoint = ros::WallTime::now();
 
@@ -307,7 +318,9 @@ void TSPsolver::setStart(octomap::point3d position)
     if (dist == explorer_utils::BIG_DISTANCE)
       nodes_[node_index].isAccesible = false;
   }
+  timing_.publishSince("setStart/update_map", t_checkpoint);
   // ROS_INFO("[TSPsolver]: setStart update_map    %4.3fms,", 1000 * (ros::WallTime::now() - t_checkpoint).toSec());
+  timing_.publishSince("setStart/total", t_total);
   // ROS_INFO("[TSPsolver]: setStart total         %4.3fms,", 1000 * (ros::WallTime::now() - t_total).toSec());
   // ROS_INFO("[TSPsolver]: ---------------------------");
   // ROS_ERROR("SET START TSP");

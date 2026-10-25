@@ -12,6 +12,7 @@
 #include <frontier_detector/FrontierArray.h>
 
 #include <explorer_utils/utils.hpp>
+#include <explorer_utils/timing.hpp>
 
 #include <clustering/tree.hpp>
 
@@ -45,6 +46,8 @@ namespace clustering
       std::unordered_map<int, frontier_detector::Frontier> frontiers_;
 
       std::unique_ptr<mrs_lib::Transformer> transformer_;
+      // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
+      std::unique_ptr<explorer_utils::TimingPublisher> timing_;
 
       mrs_lib::SubscribeHandler<frontier_detector::FrontierArray>   sh_frontiers_;
       mrs_lib::SubscribeHandler<mrs_msgs::TrackerCommand>            sh_tracker_cmd_;
@@ -71,6 +74,7 @@ namespace clustering
 
     ROS_INFO("[Clustering]: initializing...");
     nh_ = nodelet::Nodelet::getMTPrivateNodeHandle();
+    timing_ = std::make_unique<explorer_utils::TimingPublisher>(nh_);
 
     mrs_lib::ParamLoader param_loader(nh_, "Clustering");
 
@@ -175,7 +179,7 @@ namespace clustering
 
     visualizeTree(msg->header.frame_id);
 
-    ROS_INFO_THROTTLE(2.0, "[Clustering]: callbackFrontiers total %4.3fms, %zu frontiers -> %zu clusters", 1000 * (ros::WallTime::now() - t_total).toSec(),
+    ROS_INFO_THROTTLE(2.0, "[Clustering]: callbackFrontiers total %4.3fms, %zu frontiers -> %zu clusters", timing_->publishSince("callbackFrontiers/total", t_total),
                       msg->frontiers.size(), clusters.frontiers.size());
   }
 
