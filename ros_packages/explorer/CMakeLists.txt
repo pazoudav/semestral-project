@@ -35,6 +35,7 @@ set(CATKIN_DEPENDENCIES
   explorer_utils
   tsp_solver
   path_planner
+  skeleton_estimator
   )
 
 set(LIBRARIES
@@ -72,6 +73,13 @@ include_directories(SYSTEM
 
 add_library(Explorer
   src/explorer_nodelet.cpp
+  src/replanner.cpp
+  src/monitoring.cpp
+  src/frontier_path.cpp
+  src/local_refinement.cpp
+  src/precomputed_path.cpp
+  src/trajectory.cpp
+  src/callbacks.cpp
   )
 
 add_dependencies(Explorer

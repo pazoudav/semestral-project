@@ -2,6 +2,8 @@
 
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
 
+  <arg name="world_info_file_config" default="" />
+
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
   <env name="ROSCONSOLE_CONFIG_FILE" if="$(eval arg('LOGGER_DEBUG'))" value="$(find explorer)/config/debug_verbosity.yaml" />
@@ -25,6 +27,7 @@
     <node pkg="nodelet" type="nodelet" name="explorer" args="$(arg nodelet) explorer/Explorer $(arg nodelet_manager)" output="screen" launch-prefix="$(arg launch_prefix)" respawn="false">
 
       <rosparam file="$(find explorer)/config/explorer.yaml" command="load" />
+      <rosparam file="$(arg world_info_file_config)" command="load" />
 
       <!-- <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" /> -->
 
@@ -35,6 +38,7 @@
       <remap from="~octomap_in" to="octomap_server/octomap_local_binary" />
       <remap from="~diagnostics_in" to="control_manager/diagnostics" />
       <remap from="~frontiers_in" to="frontier_detector/frontiers" />
+      <remap from="~precomputed_path_in" to="skeleton_estimator/precomputed_path" />
       <remap from="~replan_request_in" to="~replan_request" />
 
 

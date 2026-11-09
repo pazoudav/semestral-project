@@ -22,6 +22,7 @@ frontiers:
     max_angle: 0.75 # ~= pi/4
     max_count: 8
     min_coverage: 8
+    recheck_age: 90.0 # [s] viewpoints of in-zone frontiers are re-scored (no resampling) at most once per this period, counted from their creation/last re-check
 
 viz:
   scale:

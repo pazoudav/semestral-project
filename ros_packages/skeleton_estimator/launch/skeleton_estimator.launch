@@ -3,6 +3,8 @@
   <arg name="UAV_NAME" default="$(env UAV_NAME)" />
 
   <arg name="world_info_file_config" default="" />
+  <!-- data/<world_type>/paths; empty or missing disables path output (estimate is still published) -->
+  <arg name="paths_dir" default="" />
 
   <arg name="LOGGER_DEBUG" default="$(optenv LOGGER_DEBUG false)" />
 
@@ -29,9 +31,11 @@
       <rosparam if="$(eval not arg('custom_config') == '')" file="$(arg custom_config)" />
 
       <param name="world_frame_id" value="$(arg UAV_NAME)/world_origin" />
+      <param name="precomputed/paths_dir" value="$(arg paths_dir)" />
 
       <!-- topics in -->
       <remap from="~octomap_points_in" to="octomap_global_vis/octomap_point_cloud_centers" />
+      <remap from="~octomap_in" to="octomap_server/octomap_global_binary" />
       <remap from="~source_skeleton_in" to="/source_skeleton" />
       <remap from="~source_viewpoints_in" to="/source_viewpoints" />
       <remap from="~target_skeleton_in" to="~/extracted_skeleton" />
@@ -43,6 +47,8 @@
       <remap from="~skeleton_vertex_ids_out" to="~/skeleton_vertex_ids" />
       <remap from="~transformed_skeleton_out" to="~/transformed_skeleton" />
       <remap from="~candidate_viewpoints_out" to="~/candidate_viewpoints" />
+      <remap from="~precomputed_path_out" to="~/precomputed_path" />
+      <remap from="~precomputed_path_vis_out" to="~/precomputed_path_vis" />
 
     </node>
 

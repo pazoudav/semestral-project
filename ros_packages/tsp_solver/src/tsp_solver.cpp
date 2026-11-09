@@ -9,7 +9,7 @@ namespace tsp_solver
   unsigned long START_ID = 0;
 
   // Initializes the fallback-solver time budget (nanoseconds) and default state: a single dummy start node, plus the client used to query real (roadmap) distances.
-  TSPsolver::TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight)
+  TSPsolver::TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight, double guide_radius)
   : timing_(nh)
 {
   duration_ = ros::Duration(0, max_duration);
@@ -17,6 +17,7 @@ namespace tsp_solver
   GlobalRuns_ = lkh_runs;
   vp_weight_ = vp_weight;
   dir_weight_ = dir_weight;
+  guide_radius_ = guide_radius;
   ensureCapacity(32);
   sc_find_simplified_path_ = mrs_lib::ServiceClientHandler<path_planner::FindSimplifiedPath>(nh, "find_simplified_path_out");
   tree_ = std::make_unique<pcl::KdTreeFLANN<pcl::PointXYZ>>();
@@ -327,15 +328,20 @@ void TSPsolver::setStart(octomap::point3d position)
 
 }
 
-// Flattens the distance graph into cost_matrix_/viewpoint_positions_/isAccesible_ via a single block copy (no per-cell lookups).
+// Flattens the distance graph, restricted to selectTourNodes()' subset, into cost_matrix_/viewpoint_positions_/isAccesible_. Row/column k of
+// cost_matrix_ is graph node keep[k]; keep[0] is always START_ID, so index 0 stays the start in the ATSP formulation below.
 void TSPsolver::constructDistanceMatrix()
 {
-  int size = static_cast<int>(nodes_.size());
   // Fails loudly (throws) if setStart() was never called; also documents the invariant relied on below.
   octomap::point3d start_position = nodes_[id_to_index_.at(START_ID)].position;
-  (void)start_position; // only consumed by the commented-out heading-penalty/KD-tree code below
 
-  cost_matrix_ = distances_.topLeftCorner(size, size).cast<double>();
+  const std::vector<int> keep = selectTourNodes();
+  const int size = static_cast<int>(keep.size());
+
+  cost_matrix_.resize(size, size);
+  for (int a = 0; a < size; a++)
+    for (int b = 0; b < size; b++)
+      cost_matrix_(a, b) = distances_(keep[a], keep[b]);
   cost_matrix_.diagonal().setZero();
 
   node_ids_.clear();
@@ -348,8 +354,9 @@ void TSPsolver::constructDistanceMatrix()
   // (void)vp_weight;
   // (void)dir_weight;
 
-  for (int i=0; i<size; i++)
+  for (int k=0; k<size; k++)
   {
+    const int i = keep[k];
     node_ids_.push_back(nodes_[i].id);
     viewpoint_positions_.push_back(nodes_[i].position);
     isAccesible_.push_back(nodes_[i].isAccesible);
@@ -360,13 +367,12 @@ void TSPsolver::constructDistanceMatrix()
     //   if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
     //     cost_matrix_(0, i) += vp_weight_*dist[0];
     // }
-    cost_matrix_(0, i) += dir_weight_*std::acos(start_velocity_.normalized().dot((nodes_[i].position - start_position).normalized()));
+    cost_matrix_(0, k) += dir_weight_*std::acos(start_velocity_.normalized().dot((nodes_[i].position - start_position).normalized()));
 
     // START_ID is always index 0 (see reserveStartSlot()), so this is the zero-cost "return to start"
     // column the ATSP formulation relies on to let LKH produce an open (rather than closed) tour.
-    cost_matrix_(i, 0) = 0.0; // BIG_DISTANCE/100;
+    cost_matrix_(k, 0) = 0.0; // BIG_DISTANCE/100;
   }
-  // costmatrixViewpointAdjustment();
 }
 
 // Writes the LKH .par files: problem/output file paths, GAIN23 heuristic, and the configured time limit/run count. Two variants are written, identical except that the
@@ -521,7 +527,8 @@ double TSPsolver::tourLength(const std::vector<int>& tour) const
   return length;
 }
 
-// Full LKH invocation: writes the cost-matrix problem file (the .par files are written once at construction), then solves it twice with LKH: once seeded with the initial tour
+// Full LKH invocation: writes the cost-matrix problem file (the .par files are written once at construction), 
+// then solves it twice with LKH: once seeded with the initial tour
 // (the result that is returned) and once without, purely to log both tour lengths for comparison.
 std::vector<int> TSPsolver::LKHSolve()
 {
@@ -546,39 +553,48 @@ std::vector<int> TSPsolver::LKHSolve()
   return result;
 }
 
-// Adds each node's distance to its nearest KD-tree guiding viewpoint into the start row of the cost matrix; no-op if setKDtreeInput() was never called. Dead code: the only call site is commented out in constructDistanceMatrix().
-void TSPsolver::costmatrixViewpointAdjustment()
+// Index 0 (START_ID) is never tested and always included. Falls back to every node when no guiding cloud has been received yet or no node lies
+// within guide_radius_ of one. Must be called with mutex_dist_graph_ held (reads nodes_).
+std::vector<int> TSPsolver::selectTourNodes()
 {
-  ROS_WARN("VP adjustment");
-  if (!pcset_){
-    return;
-  }
+  const int n = static_cast<int>(nodes_.size());
+  std::vector<int> all(n);
+  std::iota(all.begin(), all.end(), 0);
+
+  std::scoped_lock lock(mutex_guide_);
+  if (!pcset_)
+    return all;
+
+  // nearestKSearch returns squared distances
+  const float radius_sq = guide_radius_ * guide_radius_;
   std::vector<int> idx(1);
   std::vector<float> dist(1);
-  float weight = 1.0;
+  std::vector<int> guided{0};
 
-  for (size_t i = 0; i < nodes_.size(); i++)
+  for (int i = 1; i < n; i++)
   {
-    auto p = nodes_[i].position;
-    pcl::PointXYZ point = pcl::PointXYZ(p.x(), p.y(), p.z());
-    if (tree_->nearestKSearch(point, 1, idx, dist) > 0)
-    {
-      cost_matrix_(0, i) += weight*dist[0];
-    }
+    const auto &p = nodes_[i].position;
+    if (tree_->nearestKSearch(pcl::PointXYZ(p.x(), p.y(), p.z()), 1, idx, dist) > 0 && dist[0] <= radius_sq)
+      guided.push_back(i);
   }
+
+  ROS_INFO_THROTTLE(2.0, "[TSPsolver]: %zu/%d nodes guided", guided.size() - 1, n - 1);
+  return guided.size() > 1 ? guided : all;
 }
 
-// Loads the given point cloud (skeleton-derived guiding viewpoints) into the KD-tree used to bias the cost matrix; ignored if empty.
+// Builds a fresh KD-tree over the given point cloud (skeleton-derived guiding viewpoints) and swaps it in under mutex_guide_, so the index build
+// itself never blocks a running solve(); ignored if empty.
 void TSPsolver::setKDtreeInput(pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewpoints)
 {
-  // ROS_ERROR("pc call");
-  if (guiding_viewpoints->size() == 0){
+  if (guiding_viewpoints->empty())
     return;
-  }
-  ROS_ERROR("pc size %d", guiding_viewpoints->size());
-  tree_->setInputCloud(guiding_viewpoints);
+
+  pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr tree(new pcl::KdTreeFLANN<pcl::PointXYZ>());
+  tree->setInputCloud(guiding_viewpoints);
+
+  std::scoped_lock lock(mutex_guide_);
+  tree_  = tree;
   pcset_ = true;
-  // ROS_ERROR("pc set");
 }
 
 }

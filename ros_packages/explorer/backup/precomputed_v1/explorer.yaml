@@ -1,0 +1,48 @@
+planning:
+  # replanning_distance: 0.6 # unused, replaced by latency-based goalWithinLatency()
+  skip_path_point_distance: 0.4
+  max_length_after_first_viewpoint: 2.0 # [m] path_ (and so the trajectory_generation request) is cut this far past the first tour viewpoint (arc length)
+  flight_free_distance: 0.6
+  replan_request_cooldown: 0.5 # [s] min interval between replan_request_out service calls, to avoid overwhelming the service
+  stuck_distance: 0.1 # [m] min movement over stuck_duration to not be considered stuck
+  stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE
+  latency_compensation: 0.5 # [s] initial estimate of replan latency (state sampled -> trajectory published); replans start from the MPC-predicted position 2x this far ahead; 0 disables
+  latency_ema_alpha: 0.3 # [-] weight of each new latency measurement in the discounted average (1 = only the last replan counts)
+
+local_refinement: # re-picks viewpoints of the nearest TSP tour clusters by DP over a layered DAG (Euclidean distances), see refineLocalTour()
+  enabled: true
+  radius: 6.0          # [m] R_rf, tour viewpoints closer than this to the start are refined; keep above buildLocalPath's horizon (first viewpoint + max_length_after_first_viewpoint)
+  max_clusters: 8      # N_max, max number of consecutive tour clusters refined
+  max_viewpoints: 8    # K, top viewpoints by coverage considered per cluster (frontier_detector publishes at most frontiers/viewpoint/max_count)
+  w_consistency: 1.5   # [m/rad] penalty on the angle between current velocity and the first edge
+  w_coverage: 0.0      # [m] reward for normalized viewpoint coverage (0 = pure shortest local tour)
+
+zone:
+  global:
+    floor: -0.1 # [m] flight zone floor; keep numerically in sync with path_planner/config/path_planner.yaml zone.global.floor (zone_x/y/z come from world_info.yaml)
+
+precomputed: # follows skeleton_estimator's precomputed coverage path only where it enters unknown space (no TSP), see makePathPrecomputed(); frontier exploration otherwise
+  enabled: true
+  sample_step: 0.5        # [m] the path is resampled at this step; samples are labelled and entries found on them
+  clearance: 0.8          # [m] a sample is KNOWN only if every voxel within this radius is known free; keep in sync with path_planner/config/path_planner.yaml min_obstacle_clearance, so KNOWN = reachable by path_planner
+  reach_tolerance: 1.0    # [m] path_planner's path to an anchor counts if it ends at most this far from it
+  min_path_length: 1.0    # [m] a plan ending this close to the start is rejected (would leave the UAV hovering); a UAV this close to the anchor counts as no progress
+  max_entry_attempts: 3   # entries tried per replan (committed first, then nearest) before falling back to frontier exploration
+  max_no_progress: 5      # times the UAV may reach an entry's anchor without the anchor advancing, before the entry is skipped until the selected path changes
+  failure_backoff: 3.0    # [s] an entry that failed to plan is skipped for this long (planning failures don't count as no progress)
+  # vertical stretches: the lidar (+-45 deg vertical FOV) can't see the path line straight above/below, so they're climbed in a 45 deg zigzag
+  # path line -> look-up point (lookup_offset sideways, away from the object) -> next anchor (seen from there) -> look-up point -> ...
+  vertical_angle: 45.0    # [deg] an entry whose next ~lookup_offset of path is steeper than this counts as vertical (= the lidar's half vertical FOV)
+  lookup_offset: 3.0      # [m] horizontal look-up distance; the path line becomes visible up to ~lookup_offset - 2*clearance higher (keep lookup_offset*sqrt(2) below the octomap max_range of 5 m)
+  lookup_min_climb: 0.5   # [m] at the look-up point, fly to the anchor only once it is at least this much higher (lower when descending), else hold for the map
+  replan_period: 1.0      # [s] while following the precomputed path, re-plan to the committed entry this often once its anchor moved on by > min_path_length (keeps the goal ahead of the UAV); the current trajectory is kept otherwise
+
+viz:
+  scale:
+    points: 0.05
+    lines: 0.02
+
+timer_rates:
+  main: 10.0
+  path: 10.0
+  fast: 20.0

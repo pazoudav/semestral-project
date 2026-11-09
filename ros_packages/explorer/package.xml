@@ -34,6 +34,7 @@
   <depend>explorer_utils</depend>
   <depend>tsp_solver</depend>
   <depend>path_planner</depend>
+  <depend>skeleton_estimator</depend>
 
   <export>
     <nodelet plugin="${prefix}/nodelets.xml" />

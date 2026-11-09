@@ -38,6 +38,7 @@ namespace tsp_solver
       int    _lkh_runs_;
       float  _vp_weight_;
       float  _dir_weight_;
+      double _guide_radius_;
 
       std::unique_ptr<TSPsolver> tsp_solver_;
       // per-phase wall-clock timings published on ~timing/<function>/<phase> (ms), for live plotting
@@ -75,13 +76,14 @@ namespace tsp_solver
     param_loader.loadParam("tsp/lkh_runs", _lkh_runs_);
     param_loader.loadParam("tsp/vp_weight", _vp_weight_);
     param_loader.loadParam("tsp/dir_weight", _dir_weight_);
+    param_loader.loadParam("tsp/guide_radius", _guide_radius_);
 
     if (!param_loader.loadedSuccessfully()) {
       ROS_ERROR("[Solver]: Could not load all parameters");
       ros::shutdown();
     }
 
-    tsp_solver_ = std::make_unique<TSPsolver>(_max_duration_, nh_, _lkh_time_limit_, _lkh_runs_, _vp_weight_, _dir_weight_);
+    tsp_solver_ = std::make_unique<TSPsolver>(_max_duration_, nh_, _lkh_time_limit_, _lkh_runs_, _vp_weight_, _dir_weight_, _guide_radius_);
 
     mrs_lib::SubscribeHandlerOptions shopts;
     shopts.nh                 = nh_;
@@ -117,13 +119,12 @@ namespace tsp_solver
     // ROS_INFO_THROTTLE(2.0, "[Solver]: ---------------------------");
   }
 
-  // Would convert the incoming cloud and feed it to TSPsolver::setKDtreeInput, but returns unconditionally right after the init check, so this callback is currently a no-op.
+  // Converts the incoming skeleton-derived candidate viewpoints and hands them to TSPsolver::setKDtreeInput as the guiding set for the cost-matrix discount.
   void Solver::callbackCandidateViewpoints(const sensor_msgs::PointCloud2::ConstPtr msg)
   {
     if (!is_initialized_) {
       return;
     }
-    return;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
     pcl::fromROSMsg(*msg, *cloud);

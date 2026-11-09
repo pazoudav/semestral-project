@@ -6,6 +6,7 @@
 #include <octomap_msgs/Octomap.h>
 #include <algorithm>
 #include <math.h>
+#include <ros/time.h>
 #include <explorer_utils/utils.hpp>
 #include "frontier_detector/utils.hpp"
 
@@ -43,6 +44,8 @@ public:
   octomap::point3d center_;
   frontier_t cells_;
   std::vector<viewpoint_t> viewpoints_;
+  // when viewpoints_ were created or last re-scored, gates FrontierDetector's periodic viewpoint re-check
+  ros::Time viewpoints_stamp_;
 };
 
 

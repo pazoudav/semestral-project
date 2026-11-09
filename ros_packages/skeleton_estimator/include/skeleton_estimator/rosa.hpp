@@ -61,9 +61,14 @@ struct RosaParams
   int    k_KNN                = 6;
   double sample_r              = 0.05;
   double alpha                = 0.3;
-  double pt_downsample_size   = 0.02;
+  double pt_downsample_size   = 0.02;  // voxel leaf, as a fraction of norm_scale (fixed, not grown to a point budget)
   int    estimation_number    = 10;
   bool   ground                = false;
+  double norm_scale           = 0.0;   // [m] fixed normalization scale (must be > 0); all normalized-unit params are relative to it
+  double input_resolution     = 0.2;   // [m] input (octomap) voxel size; the leaf is rounded to a multiple of it (<= 0: no rounding)
+  bool   dcrosa_shrink        = false; // dcROSA principal-line shrink (was effectively a no-op in the port; see rosaDcrosa)
+  double shrink_conf_low      = 0.4;   // PCA confidence where the shrink weight starts ramping up from 0
+  double shrink_conf_high     = 0.6;   // ... and where it reaches full projection (1)
 };
 
 /* Output skeleton graph, in original point-cloud scale */
@@ -84,10 +89,10 @@ public:
   void setParams(const RosaParams& params);
 
   /* Runs the full pipeline on `cloud` (already resampled/filtered by the caller).
-   * `est_num` is the caller-computed target point count (mirrors pointCloudCallback's
-   * dynamic `estNum = size/10` derivation), used as the voxel-downsample target
-   * inside normalize(). Returns false (and produces no result) if the input is too
-   * small to process, mirroring the original's `estNum < 200` bail-out. */
+   * `est_num` is the caller-computed point count (mirrors pointCloudCallback's
+   * `estNum = size/10`); it is now only used for the original's `estNum < 200`
+   * bail-out (returns false, no result) — the downsample uses a fixed leaf instead
+   * of growing one to that budget. Also returns false if params.norm_scale <= 0. */
   bool run(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int est_num);
 
   const SkeletonGraph& graph() const
@@ -100,6 +105,7 @@ private:
   void pcloudReadOff(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
   void normalize();
   void normalEstimation();
+  void orientNormalsConsistently();
   void pcloudAdjMatrixMahalanobis(double r_range);
   void rosaDrosa();
   void rosaDcrosa();
@@ -152,7 +158,7 @@ private:
   ExtraDel ed_;
 
   int pcd_size_ = 0;
-  int est_num_  = 0;  // caller-provided voxel-downsample target for the current run() call
+  int est_num_  = 0;  // caller-provided point count for the current run() call (bail-out gate only)
 
   /* runtime values re-derived every run() call (see normalize()); the
    * ROSA_main config params `rosa_main/th_mah`/`rosa_main/delta` are not

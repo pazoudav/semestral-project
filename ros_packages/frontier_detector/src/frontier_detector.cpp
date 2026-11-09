@@ -18,6 +18,7 @@ FrontierDetector::FrontierDetector( double free_space_diameter,
                                   double viewpoint_max_angle,
                                   int    max_viewpoints_per_fr,
                                   int    min_coverage,
+                                  double viewpoint_recheck_age,
                                   const ros::NodeHandle& nh)
   : timing_(nh)
 {
@@ -32,6 +33,7 @@ FrontierDetector::FrontierDetector( double free_space_diameter,
   viewpoint_max_angle_ = viewpoint_max_angle;
   max_viewpoints_per_fr_ = max_viewpoints_per_fr;
   min_coverage_ = min_coverage;
+  viewpoint_recheck_age_ = ros::Duration(viewpoint_recheck_age);
 
   fis_c_ = std::vector<std::shared_ptr<FIS>>(0);
   frontier_id_ = 1;
@@ -294,6 +296,7 @@ void FrontierDetector::makeViewpoints(std::shared_ptr<FIS> fis)
   }
   // sort viewpoints by their coverage (how many FR cells they can see)
   std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
+  fis->viewpoints_stamp_ = ros::Time::now();
 
 }
 
@@ -408,11 +411,12 @@ std::vector<frontier_t> FrontierDetector::frontierSearch(octomap::OcTreeKey star
 }
 
 
-// (re)builds viewpoints for every valid frontier in zone_ that has none yet, re-checks existing viewpoints' coverage,
-// drops frontiers left with no viewpoints, and updates viewable_frontier_cnt_
+// (re)builds viewpoints for every valid frontier in zone_ that has none yet, re-scores existing viewpoints older than
+// viewpoint_recheck_age_ (no resampling), drops frontiers left with no viewpoints, and updates viewable_frontier_cnt_
 void FrontierDetector::setViewpoints()
 {
   viewable_frontier_cnt_ = 0;
+  ros::Time now = ros::Time::now();
 
   for (auto& fis : fis_c_)
   {
@@ -427,19 +431,24 @@ void FrontierDetector::setViewpoints()
       {
         makeViewpoints(fis);
       }
-      // for (int vidx = fis->viewpoints_.size()-1; vidx >= 0; vidx--)
-      // {
-      //   int new_coverage = viewpointCoverage(fis->viewpoints_[vidx].position, fis->cells_);
-      //   if (new_coverage < min_coverage_)
-      //   {
-      //     fis->viewpoints_.erase(fis->viewpoints_.begin() + vidx);
-      //   }
-      //   else
-      //   {
-      //     fis->viewpoints_[vidx].coverage = new_coverage;
-      //   }
-      // }
-      // std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
+      // re-score viewpoints at most once per viewpoint_recheck_age_, dropping the ones that no longer see enough frontier cells
+      else if (now - fis->viewpoints_stamp_ > viewpoint_recheck_age_)
+      {
+        for (int vidx = fis->viewpoints_.size()-1; vidx >= 0; vidx--)
+        {
+          int new_coverage = viewpointCoverage(fis->viewpoints_[vidx].position, fis->cells_);
+          if (new_coverage < min_coverage_)
+          {
+            fis->viewpoints_.erase(fis->viewpoints_.begin() + vidx);
+          }
+          else
+          {
+            fis->viewpoints_[vidx].coverage = new_coverage;
+          }
+        }
+        std::sort(fis->viewpoints_.begin(), fis->viewpoints_.end(), [](viewpoint_t a, viewpoint_t b){return a.coverage > b.coverage;});
+        fis->viewpoints_stamp_ = now;
+      }
     }
 
     if (fis->viewpoints_.size() > 0){

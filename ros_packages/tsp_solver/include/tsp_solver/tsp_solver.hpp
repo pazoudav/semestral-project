@@ -70,8 +70,11 @@ private:
     Eigen::MatrixXf distances_;
     std::unordered_map<unsigned long, int> id_to_index_;
 
+    // KD-tree over the skeleton-derived guiding viewpoints; swapped wholesale by setKDtreeInput() under mutex_guide_.
     pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr tree_;
     bool pcset_ = false;
+    // Guards tree_/pcset_: written from the candidate-viewpoint callback, read by constructDistanceMatrix() during solve().
+    std::mutex mutex_guide_;
 
     // Guards nodes_/distances_/id_to_index_: held by syncFrontiers, setStart, and (briefly) the
     // dist-graph snapshot phase of solve() — kept separate from mutex_solve_ so a frontier/start
@@ -96,6 +99,7 @@ private:
     int         GlobalRuns_;
     float       vp_weight_;
     float       dir_weight_;
+    double      guide_radius_;
     double      GlobalTimeLimit_;
     int         precision_      = 10;
 
@@ -135,12 +139,13 @@ private:
     double tourLength(const std::vector<int>& tour) const;
     // Writes the cost-matrix problem file and initial tour, solves with LKH with and without the initial tour (logging both tour lengths), and returns the initialized run's tour.
     std::vector<int> LKHSolve();
-    // Adds nearest-guiding-viewpoint distance from the KD-tree to the start row of the cost matrix (currently unused, call site commented out).
-    void costmatrixViewpointAdjustment();
+    // Graph indices the next tour is solved over: START_ID plus every node within guide_radius_ of a guiding viewpoint, or all nodes if none
+    // are (or no guiding cloud has been received yet).
+    std::vector<int> selectTourNodes();
 
 
 public:
-    TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight);
+    TSPsolver(int max_duration, ros::NodeHandle &nh, double lkh_time_limit, int lkh_runs, float vp_weight, float dir_weight, double guide_radius);
     ~TSPsolver();
 
     // pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewpoints_;

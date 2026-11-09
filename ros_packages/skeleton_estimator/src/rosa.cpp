@@ -14,13 +14,36 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <ctime>
+#include <functional>
 #include <limits>
+#include <numeric>
+#include <queue>
 #include <set>
+#include <tuple>
 
 namespace skeleton_estimator
 {
+
+namespace
+{
+
+/* Strict lexicographic (z, y, x) order on points. Sorting the cloud with it makes every
+ * index-order-dependent step (k-NN tie-breaks, farthest-point sampling start, argmax /
+ * argmin tie-breaks in line extraction and edge collapse) independent of the order
+ * the input cloud happened to arrive in; index 0 is then the lowest point. */
+template <typename PointT>
+bool lexLessZYX(const PointT& a, const PointT& b)
+{
+  if (a.z != b.z) {
+    return a.z < b.z;
+  }
+  if (a.y != b.y) {
+    return a.y < b.y;
+  }
+  return a.x < b.x;
+}
+
+}  // namespace
 
 void Rosa::setParams(const RosaParams& params)
 {
@@ -34,10 +57,12 @@ bool Rosa::run(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int est_num)
   if (est_num < 200) {
     return false;
   }
+  if (params_.norm_scale <= 0.0) {
+    ROS_WARN_THROTTLE(5.0, "[SkeletonEstimator - ROSA] norm_scale %.3f <= 0, skipping", params_.norm_scale);
+    return false;
+  }
 
-  std::srand((unsigned)std::time(nullptr));
-
-  P_          = Pcloud();
+  P_         = Pcloud();
   pcd_size_   = 0;
   norm_scale_ = 1.0;
   centroid_.setZero();
@@ -121,6 +146,7 @@ void Rosa::pcloudReadOff(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
     pcl::RandomSample<pcl::PointXYZ> rs;
     rs.setInputCloud(P_.ground_pts_);
     rs.setSample(dsize);
+    rs.setSeed(0);  // PCL defaults to a time-based seed; fixed for repeatability
     rs.filter(*P_.ground_pts_);
   }
 }
@@ -139,63 +165,174 @@ void Rosa::normalEstimation()
   ne.compute(*cloud_normals);
 
   P_.normals_ = cloud_normals;
+  orientNormalsConsistently();
 }
 
-/* Pipeline step 2: recenters/rescales the cloud into a roughly unit-sized frame (saving
+/* Makes the sign of P_.normals_ consistent across the surface (Hoppe et al. '92):
+ * builds a symmetric k-NN graph (k = estimation_number) over P_.pts_ and propagates
+ * orientation along its minimum spanning tree with edge weight 1 - |n_i . n_j|, so
+ * flips are decided across the most parallel neighbor pairs first. Each connected
+ * component is seeded at its point farthest from the origin (= the centroid, since
+ * this runs after normalize() recenters the cloud), oriented towards the centroid —
+ * the same convention PCL's default (0,0,0)-viewpoint flip produced before, so the
+ * negation in normalize() keeps yielding the same overall sign. Normals must be
+ * consistent before the VoxelGrid<PointNormal> downsample (which averages them) and
+ * before mahalanobisLeth / symmetry-normal estimation (which are sign-sensitive). */
+void Rosa::orientNormalsConsistently()
+{
+  const auto& pts = P_.pts_->points;
+  auto&       nrs = P_.normals_->points;
+  const int   n   = (int)pts.size();
+  if (n < 2) {
+    return;
+  }
+
+  auto valid = [&](int i) {
+    return std::isfinite(nrs[i].normal_x) && std::isfinite(nrs[i].normal_y) && std::isfinite(nrs[i].normal_z);
+  };
+  auto dotN = [&](int i, int j) {
+    return nrs[i].normal_x * nrs[j].normal_x + nrs[i].normal_y * nrs[j].normal_y + nrs[i].normal_z * nrs[j].normal_z;
+  };
+  auto flip = [&](int i) {
+    nrs[i].normal_x = -nrs[i].normal_x;
+    nrs[i].normal_y = -nrs[i].normal_y;
+    nrs[i].normal_z = -nrs[i].normal_z;
+  };
+
+  /* symmetric k-NN adjacency (k + 1 because the query point returns itself) */
+  const int                     k = std::min(std::max(params_.estimation_number, 3) + 1, n);
+  std::vector<std::vector<int>> adj(n);
+  {
+    pcl::KdTreeFLANN<pcl::PointXYZ> tree;
+    tree.setInputCloud(P_.pts_);
+    std::vector<int>   idx(k);
+    std::vector<float> d2(k);
+    for (int i = 0; i < n; ++i) {
+      tree.nearestKSearch(pts[i], k, idx, d2);
+      for (int j : idx) {
+        if (j != i) {
+          adj[i].push_back(j);
+          adj[j].push_back(i);
+        }
+      }
+    }
+  }
+
+  /* seed order: farthest from the centroid first (ties broken by index, which is itself
+   * deterministic since normalize() sorts the cloud before calling us) */
+  std::vector<int>   order(n);
+  std::vector<float> r2(n);
+  for (int i = 0; i < n; ++i) {
+    r2[i] = pts[i].x * pts[i].x + pts[i].y * pts[i].y + pts[i].z * pts[i].z;
+  }
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return r2[a] > r2[b]; });
+
+  /* Prim's MST from each seed; (weight, to, from) min-heap, ties broken by indices */
+  using Item = std::tuple<float, int, int>;
+  std::priority_queue<Item, std::vector<Item>, std::greater<Item>> pq;
+  std::vector<char>                                                 visited(n, 0);
+
+  auto pushNeighbors = [&](int from) {
+    for (int to : adj[from]) {
+      if (!visited[to] && valid(to)) {
+        pq.emplace(1.0f - std::fabs(dotN(from, to)), to, from);
+      }
+    }
+  };
+
+  for (int seed : order) {
+    if (visited[seed] || !valid(seed)) {
+      continue;
+    }
+    /* towards the centroid (origin): n . (0 - p) > 0 */
+    const float outward = nrs[seed].normal_x * pts[seed].x + nrs[seed].normal_y * pts[seed].y + nrs[seed].normal_z * pts[seed].z;
+    if (outward > 0.0f) {
+      flip(seed);
+    }
+    visited[seed] = 1;
+    pushNeighbors(seed);
+
+    while (!pq.empty()) {
+      const auto [w, to, from] = pq.top();
+      (void)w;
+      pq.pop();
+      if (visited[to]) {
+        continue;
+      }
+      visited[to] = 1;
+      if (dotN(from, to) < 0.0f) {
+        flip(to);
+      }
+      pushNeighbors(to);
+    }
+  }
+}
+
+/* Pipeline step 2: recenters/rescales the cloud into a normalized frame (saving
  * centroid_/norm_scale_ for restoreScale()), estimates normals, and voxel-downsamples
- * (growing the voxel size until under budget) to approximately est_num_ points; also
- * derives th_mah_/delta_ from the final voxel size, since the original always
- * overwrites its config-loaded values here before first use. */
+ * with a fixed, world-anchored leaf; also derives th_mah_/delta_ from that leaf, since
+ * the original always overwrites its config-loaded values here before first use.
+ *
+ * Stability within a run (growing map): the original normalized by the cloud's
+ * bounding-box extent and grew the leaf until under a size/10 point budget, so every
+ * normalized-unit parameter (radius, sample_r, leaf, delta_) changed its metric size
+ * whenever the map grew, and the voxel grid (anchored at the moving centroid) re-binned
+ * unchanged regions differently each frame. Now:
+ *  - the scale is the fixed params_.norm_scale [m], so those parameters have a constant
+ *    metric size;
+ *  - the leaf is pt_downsample_size * norm_scale [m], rounded to a multiple of the input
+ *    (octomap) resolution, and the centroid is snapped to a multiple of the leaf, so the
+ *    grid's cell boundaries sit at world-fixed positions (multiples of the leaf, hence of
+ *    the octomap resolution) and octomap voxel centers fall mid-cell: an unchanged part
+ *    of the map always downsamples to the same points.
+ * The centroid itself still follows the cloud; everything downstream is translation-
+ * equivariant apart from the |x| < 1 (i.e. within norm_scale of the centroid) sanity
+ * bounds on projected points. */
 void Rosa::normalize()
 {
   P_.ori_pts_.reset(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::copyPointCloud(*P_.pts_, *P_.ori_pts_);
 
-  pcl::PointXYZ min, max;
-  pcl::getMinMax3D(*P_.pts_, min, max);
-  double x_scale   = max.x - min.x;
-  double y_scale   = max.y - min.y;
-  double z_scale   = max.z - min.z;
-  double max_scale = (x_scale >= y_scale) ? x_scale : y_scale;
-  if (max_scale < z_scale) {
-    max_scale = z_scale;
+  norm_scale_ = params_.norm_scale;
+
+  double leaf_m = params_.pt_downsample_size * norm_scale_;
+  if (params_.input_resolution > 0.0) {
+    leaf_m = std::max(1.0, std::round(leaf_m / params_.input_resolution)) * params_.input_resolution;
   }
 
-  norm_scale_ = max_scale;
   pcl::compute3DCentroid(*P_.pts_, centroid_);
+  for (int k = 0; k < 3; ++k) {
+    centroid_(k) = std::round(centroid_(k) / leaf_m) * leaf_m;
+  }
 
   for (int i = 0; i < (int)P_.pts_->points.size(); ++i) {
-    P_.pts_->points[i].x = (float)((P_.pts_->points[i].x - centroid_(0)) / max_scale);
-    P_.pts_->points[i].y = (float)((P_.pts_->points[i].y - centroid_(1)) / max_scale);
-    P_.pts_->points[i].z = (float)((P_.pts_->points[i].z - centroid_(2)) / max_scale);
+    P_.pts_->points[i].x = (float)((P_.pts_->points[i].x - centroid_(0)) / norm_scale_);
+    P_.pts_->points[i].y = (float)((P_.pts_->points[i].y - centroid_(1)) / norm_scale_);
+    P_.pts_->points[i].z = (float)((P_.pts_->points[i].z - centroid_(2)) / norm_scale_);
   }
+
+  /* canonical point order, so normal estimation/orientation tie-breaks don't depend on input order */
+  std::sort(P_.pts_->points.begin(), P_.pts_->points.end(), lexLessZYX<pcl::PointXYZ>);
 
   normalEstimation();
 
   P_.cloud_with_normals.reset(new pcl::PointCloud<pcl::PointNormal>);
-  pcl::PointCloud<pcl::PointNormal>::Ptr temp_all(new pcl::PointCloud<pcl::PointNormal>);
-  pcl::PointCloud<pcl::PointNormal>::Ptr temp_all_down(new pcl::PointCloud<pcl::PointNormal>);
-  pcl::concatenateFields(*P_.pts_, *P_.normals_, *temp_all_down);
   pcl::concatenateFields(*P_.pts_, *P_.normals_, *P_.cloud_with_normals);
 
-  int upper_size   = est_num_;
-  int cur_pt_size  = (int)temp_all_down->points.size();
-  while (cur_pt_size > upper_size) {
-    pcl::VoxelGrid<pcl::PointNormal> vg;
-    vg.setInputCloud(temp_all_down);
-    vg.setLeafSize(pt_downsample_voxel_size_, pt_downsample_voxel_size_, pt_downsample_voxel_size_);
-    vg.filter(*temp_all);
-
-    cur_pt_size = (int)temp_all->points.size();
-    if (cur_pt_size > upper_size) {
-      pt_downsample_voxel_size_ += 0.002;
-    }
-  }
+  /* fixed leaf in normalized units (VoxelGrid bins at floor(p / leaf), i.e. anchored at
+   * the snapped centroid, which is a multiple of leaf_m in world coordinates) */
+  pt_downsample_voxel_size_ = leaf_m / norm_scale_;
 
   pcl::VoxelGrid<pcl::PointNormal> vgf;
   vgf.setInputCloud(P_.cloud_with_normals);
   vgf.setLeafSize(pt_downsample_voxel_size_, pt_downsample_voxel_size_, pt_downsample_voxel_size_);
   vgf.filter(*P_.cloud_with_normals);
+
+  /* canonical order of the downsampled set: every later index-order-dependent step
+   * (farthest-point sampling in rosaLineextract starts at index 0 = lowest point,
+   * argmax/argmin tie-breaks, k-NN ties) becomes a function of geometry only */
+  std::sort(P_.cloud_with_normals->points.begin(), P_.cloud_with_normals->points.end(), lexLessZYX<pcl::PointNormal>);
 
   /* the original's `rosa_main/th_mah`/`rosa_main/delta` config params are not
    * ported: both are unconditionally overwritten right here before their first
@@ -383,10 +520,10 @@ void Rosa::rosaDrosa()
 }
 
 /* Pipeline step 5 (dcROSA): for num_dcrosa iterations, averages each ROSA point
- * (pset_) with its P_.neighs adjacency, then locally shrinks it towards the
- * dominant principal axis found via PCA over its k_KNN nearest pset_ neighbors
- * (skipped where the PCA confidence ratio is below 0.5), pulling points closer
- * onto a thin curve/axis. */
+ * (pset_) with its P_.neighs adjacency, then — only if params_.dcrosa_shrink (it was a
+ * silent no-op before, see below) — locally shrinks it towards the dominant principal
+ * axis found via PCA over its k_KNN nearest pset_ neighbors, soft-weighted by the PCA
+ * confidence ratio, pulling points closer onto a thin curve/axis. */
 void Rosa::rosaDcrosa()
 {
   for (int n = 0; n < params_.num_dcrosa; ++n) {
@@ -419,7 +556,18 @@ void Rosa::rosaDcrosa()
 
     Eigen::VectorXd conf              = Eigen::VectorXd::Zero(pset_.rows());
     Eigen::MatrixXd newpset2          = pset_;
-    const double    confidence_th     = 0.5;
+    /* The port's original shrink line projected with svd.matrixU().col(0) — a k-vector
+     * over the neighbors, not a 3D direction — which reduces to U0^T U0 d = d, i.e. the
+     * shrink never moved anything (and its hard conf < 0.5 switch had no effect). The
+     * real projection onto the local principal line (V.col(0)) is applied only when
+     * params_.dcrosa_shrink is set, with a soft weight ramping linearly from 0 at
+     * shrink_conf_low to 1 at shrink_conf_high instead of a hard switch, so points near
+     * the threshold (typically at junctions) don't flip between shrunk/untouched. */
+    if (!params_.dcrosa_shrink) {
+      continue;  // keep the historical (no-op) behavior; pset_ is already the smoothed set
+    }
+    const double conf_lo  = params_.shrink_conf_low;
+    const double conf_hi  = std::max(params_.shrink_conf_high, conf_lo + 1e-6);
 
     for (int i = 0; i < (int)pset_.rows(); ++i) {
       std::vector<int>   idx_nn(params_.k_KNN);
@@ -436,11 +584,16 @@ void Rosa::rosaDcrosa()
 
       Eigen::BDCSVD<Eigen::MatrixXd> svd(neighbors, Eigen::ComputeThinU | Eigen::ComputeThinV);
       conf(i) = svd.singularValues()(0) / svd.singularValues().sum();
-      if (conf(i) < confidence_th) {
+      const double w = std::min(1.0, std::max(0.0, (conf(i) - conf_lo) / (conf_hi - conf_lo)));
+      if (w <= 0.0) {
         continue;
       }
 
-      newpset2.row(i) = svd.matrixU().col(0).transpose() * (svd.matrixU().col(0) * (pset_.row(i) - local_mean.transpose())) + local_mean.transpose();
+      /* projection of pset_(i) onto the local principal line (through local_mean, along v1) */
+      const Eigen::Vector3d v1   = svd.matrixV().col(0);
+      const Eigen::Vector3d d    = pset_.row(i).transpose() - local_mean;
+      const Eigen::Vector3d proj = local_mean + v1 * v1.dot(d);
+      newpset2.row(i)            = (pset_.row(i).transpose() + w * (proj - pset_.row(i).transpose())).transpose();
     }
 
     pset_ = newpset2;
@@ -903,35 +1056,24 @@ int Rosa::argmaxEigen(const Eigen::MatrixXd& x)
   return (int)max_row;
 }
 
-/* Builds an orthonormal 3x3 frame with (normalized) v as its first row, completing
- * it via Gram-Schmidt on random vectors for the other two rows. */
+/* Builds an orthonormal 3x3 frame with (normalized) v as its first row. Deterministic
+ * (the original completed it via Gram-Schmidt on random vectors, making the initial
+ * symmetry normals — and hence the skeleton — differ run to run on identical input):
+ * row 1 = v x e, where e is the coordinate axis least aligned with v (well-conditioned),
+ * row 2 = v x row 1. */
 Eigen::Matrix3d Rosa::createOrthonormalFrame(Eigen::Vector3d v) const
 {
-  v                     = v / v.norm();
-  const double TH_ZERO  = 1e-10;
+  v.normalize();
 
-  Eigen::Matrix3d M = Eigen::Matrix3d::Zero();
-  M(0, 0) = v(0);
-  M(0, 1) = v(1);
-  M(0, 2) = v(2);
+  Eigen::Index min_axis;
+  v.cwiseAbs().minCoeff(&min_axis);
+  const Eigen::Vector3d u = v.cross(Eigen::Vector3d::Unit(min_axis)).normalized();
+  const Eigen::Vector3d w = v.cross(u);
 
-  for (int i = 1; i < 3; ++i) {
-    Eigen::Vector3d new_vec;
-    new_vec.setRandom();
-    new_vec = new_vec / new_vec.norm();
-    while (std::abs(1.0 - v.dot(new_vec)) < TH_ZERO) {
-      new_vec.setRandom();
-      new_vec = new_vec / new_vec.norm();
-    }
-    for (int j = 0; j < i; ++j) {
-      Eigen::Vector3d temp_vec = new_vec - new_vec.dot(M.row(j)) * (M.row(j).transpose());
-      new_vec                  = temp_vec / temp_vec.norm();
-    }
-    M(i, 0) = new_vec(0);
-    M(i, 1) = new_vec(1);
-    M(i, 2) = new_vec(2);
-  }
-
+  Eigen::Matrix3d M;
+  M.row(0) = v.transpose();
+  M.row(1) = u.transpose();
+  M.row(2) = w.transpose();
   return M;
 }
 

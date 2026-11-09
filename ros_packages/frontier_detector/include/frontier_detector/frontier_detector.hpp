@@ -59,6 +59,7 @@ private:
   double  viewpoint_max_angle_;
   int     max_viewpoints_per_fr_;
   int     min_coverage_;
+  ros::Duration viewpoint_recheck_age_;
 
   // drops frontiers that are no longer valid (isStillFrontier), growing the search zone to cover them, and marks cells of surviving frontiers as already-explored
   void removeFrontiers();
@@ -78,7 +79,8 @@ private:
   bool canBeProcessed(long key_idx, const std::vector<bool>& closed);
   // samples candidate viewpoints around a frontier, keeping only free-space ones with sufficient coverage, sorted best-first
   void makeViewpoints(std::shared_ptr<FIS> fis);
-  // (re)builds viewpoints for every valid frontier in zone_ that has none yet, re-checks existing viewpoints' coverage, drops frontiers left with no viewpoints, and updates viewable_frontier_cnt_
+  // (re)builds viewpoints for every valid frontier in zone_ that has none yet, re-scores existing viewpoints older than viewpoint_recheck_age_ (no resampling),
+  // drops frontiers left with no viewpoints, and updates viewable_frontier_cnt_
   void setViewpoints();
   // counts how many of the frontier's cells are within range/FOV and unoccluded (raycast) from the given viewpoint
   int  viewpointCoverage(octomap::point3d viewpoint_pos, const frontier_t& frontier_cells);
@@ -104,6 +106,7 @@ public:
                   double viewpoint_max_angle,
                   int    max_viewpoints_per_fr,
                   int    min_coverage,
+                  double viewpoint_recheck_age,
                   const ros::NodeHandle& nh);
   ~FrontierDetector();
 

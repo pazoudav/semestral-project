@@ -16,6 +16,7 @@ import numpy as np
 from plyfile import PlyData
 
 WORLD_TYPES = ("turbine", "pylon", "bridge")
+ZONE_MARGIN = 5  # [m]
 
 
 def main():
@@ -37,12 +38,12 @@ def main():
     lb = np.abs(np.min(data, axis=0))
     ub = np.abs(np.max(data, axis=0))
 
-    top = np.max([lb, ub], axis=0)
-    top = np.round(top)
-    top += 2.0
-    top = top.astype(int)
+    extent = np.round(np.max([lb, ub], axis=0)).astype(int)
+    # flight-zone margin around the object: offline FC-Planner viewpoints sit ~3 m (up to several m) from the surface, and
+    # path_planner only samples roadmap nodes inside the zone, so it must cover them
+    top = extent + ZONE_MARGIN
 
-    spawn_x = top[0] - 1
+    spawn_x = extent[0] + 1  # 1 m off the object's x extent, independent of the margin
     zone_x = 2 * top[0]
     zone_y = 2 * top[1]
     zone_z = top[2]
@@ -53,6 +54,9 @@ def main():
     print(f"zone_x: {zone_x}")
     print(f"zone_y: {zone_y}")
     print(f"zone_z: {zone_z}")
+    if world_type == "pylon":
+        # yaw symmetry order about the vertical axis, read by skeleton_estimator; 2 = 180 deg symmetric (set 1 by hand for none)
+        print("symmetry_order: 2")
     return 0
 
 

@@ -74,7 +74,7 @@ windows:
       layout: tiled
       panes:
         # - 'history -s rosservice call /uav1/control_manager/goto [5.0,0.0,1.5,0.0]'
-        - waitForHw; roslaunch explorer explorer.launch
+        - waitForHw; roslaunch explorer explorer.launch world_info_file_config:=${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml
   
   - nodelets:
       layout: tiled
@@ -87,11 +87,10 @@ windows:
   - skeleton:
       layout: tiled
       panes:
+        - waitForHw; roslaunch skeleton_estimator skeleton_estimator.launch world_info_file_config:=${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml paths_dir:=${SKELETON_DATA_DIR}/paths
         - waitForGazebo; 
-          cat ${SKELETON_DATA_DIR}/skeleton.outmsg | rostopic pub /source_skeleton visualization_msgs/Marker;
-          cat ${SKELETON_DATA_DIR}/viewpoints.outmsg | rostopic pub /source_viewpoints visualization_msgs/MarkerArray
-        - waitForHw; roslaunch skeleton_estimator skeleton_estimator.launch world_info_file_config:=${WORLDS_DIR}/${WORLD_NAME}/world_info.yaml
-
+          cat ${SKELETON_DATA_DIR}/skeleton.outmsg | rostopic pub -l /source_skeleton visualization_msgs/Marker &
+          cat ${SKELETON_DATA_DIR}/viewpoints.outmsg | rostopic pub -l /source_viewpoints visualization_msgs/MarkerArray
         
   - rviz:
       layout: tiled

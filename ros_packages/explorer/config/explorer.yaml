@@ -6,7 +6,7 @@ planning:
   replan_request_cooldown: 0.5 # [s] min interval between replan_request_out service calls, to avoid overwhelming the service
   stuck_distance: 0.1 # [m] min movement over stuck_duration to not be considered stuck
   stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE
-  latency_compensation: 0.5 # [s] initial estimate of replan latency (state sampled -> trajectory published); replans start from the MPC-predicted position this far ahead; 0 disables
+  latency_compensation: 0.5 # [s] initial estimate of replan latency (state sampled -> trajectory published); replans start from the MPC-predicted position 2x this far ahead; 0 disables
   latency_ema_alpha: 0.3 # [-] weight of each new latency measurement in the discounted average (1 = only the last replan counts)
 
 local_refinement: # re-picks viewpoints of the nearest TSP tour clusters by DP over a layered DAG (Euclidean distances), see refineLocalTour()
@@ -17,8 +17,27 @@ local_refinement: # re-picks viewpoints of the nearest TSP tour clusters by DP o
   w_consistency: 1.5   # [m/rad] penalty on the angle between current velocity and the first edge
   w_coverage: 0.0      # [m] reward for normalized viewpoint coverage (0 = pure shortest local tour)
 
-prm:
-  free_space_diameter: 1.2   # was kept in sync with the removed prm_solver's prm.free_space_diameter; path_planner has no direct equivalent (closest: min_obstacle_clearance in path_planner/config/path_planner.yaml)
+zone:
+  global:
+    floor: -0.1 # [m] flight zone floor; keep numerically in sync with path_planner/config/path_planner.yaml zone.global.floor (zone_x/y/z come from world_info.yaml)
+
+precomputed: # follows skeleton_estimator's precomputed coverage path where it enters unknown space (no TSP), see makePathPrecomputed(); frontier exploration otherwise
+  # GOTO: fly to the last known sample before unknown space (anchor) via path_planner; FOLLOW: fly the path itself from there (trajectory from
+  # the path samples, occupied-only collision checks) until the segment ahead has no unknown left, then GOTO the next entry
+  enabled: true
+  sample_step: 0.5        # [m] the path is resampled at this step; samples are labelled and entries found on them
+  clearance: 0.8          # [m] a sample is KNOWN only if every voxel within this radius is known free; keep in sync with path_planner/config/path_planner.yaml min_obstacle_clearance, so KNOWN = reachable by path_planner
+  reach_tolerance: 1.0    # [m] path_planner's path to an anchor counts if it ends at most this far from it
+  min_path_length: 1.0    # [m] a plan ending this close to the start is rejected (would leave the UAV hovering); a UAV this close to the anchor counts as no progress
+  max_entry_attempts: 3   # entries tried per replan (committed first, then nearest) before falling back to frontier exploration
+  max_no_progress: 5      # times a FOLLOW may end right at its entry anchor (nothing uncovered) before the entry is skipped until the selected path changes
+  failure_backoff: 3.0    # [s] an entry whose GOTO failed to plan is skipped for this long (planning failures don't count as no progress)
+  join_distance: 1.2      # [m] GOTO -> FOLLOW once the UAV is this close to the anchor (or the known stretch it advanced along); keep >= reach_tolerance
+  follow_clearance: 0.5   # [m] FOLLOW stops before a path sample with an occupied voxel within this radius (unknown voxels are ignored)
+  follow_horizon: 5.0     # [m] length of path ahead of the UAV put into each FOLLOW trajectory
+  max_known_gap: 4.0      # [m] FOLLOW continues only while there is an UNKNOWN sample within this path length ahead; otherwise the next start is selected (GOTO)
+  off_path_distance: 1.5  # [m] FOLLOW is abandoned when the UAV is farther than this from the path
+  replan_period: 1.0      # [s] in FOLLOW, the trajectory is re-extended from the current position this often (kept if that fails)
 
 viz:
   scale:

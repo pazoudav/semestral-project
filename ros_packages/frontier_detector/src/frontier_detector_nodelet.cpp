@@ -89,6 +89,7 @@ namespace frontier_detector
       double _viewpoint_sample_height_;
       double _viewpoint_max_distance_;
       double _viewpoint_max_angle_;
+      double _viewpoint_recheck_age_;
       double _scale_points_;
       double _scale_lines_;
 
@@ -195,6 +196,7 @@ namespace frontier_detector
     param_loader.loadParam("frontiers/viewpoint/sample_height", _viewpoint_sample_height_);
     param_loader.loadParam("frontiers/viewpoint/max_distance", _viewpoint_max_distance_);
     param_loader.loadParam("frontiers/viewpoint/max_angle", _viewpoint_max_angle_);
+    param_loader.loadParam("frontiers/viewpoint/recheck_age", _viewpoint_recheck_age_);
 
     param_loader.loadParam("viz/scale/points", _scale_points_);
     param_loader.loadParam("viz/scale/lines", _scale_lines_);
@@ -241,6 +243,7 @@ namespace frontier_detector
                                                            _viewpoint_max_angle_,
                                                            _max_viewpoint_cnt_,
                                                            _min_viewpoint_coverage_,
+                                                           _viewpoint_recheck_age_,
                                                            nh_);
 
     flight_zone_ = {.min=octomap::point3d(-_flight_zone_width_x_/2.0, -_flight_zone_width_y_/2.0, _flight_zone_floor_),

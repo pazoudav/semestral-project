@@ -4,3 +4,6 @@ tsp:
   lkh_runs: 1
   vp_weight: 0.7
   dir_weight: 2.0
+  # nodes within guide_radius [m] of a skeleton candidate viewpoint are "guided"; if any exist, the tour
+  # is solved over (start + guided nodes) only, otherwise over all nodes
+  guide_radius: 1.0
