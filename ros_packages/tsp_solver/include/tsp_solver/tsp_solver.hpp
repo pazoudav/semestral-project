@@ -73,6 +73,8 @@ private:
     // KD-tree over the skeleton-derived guiding viewpoints; swapped wholesale by setKDtreeInput() under mutex_guide_.
     pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr tree_;
     bool pcset_ = false;
+    // guiding enabled (set via the nodelet's ~set_guiding_in service); when false, selectTourNodes() always returns every node
+    bool guiding_enabled_ = true;
     // Guards tree_/pcset_: written from the candidate-viewpoint callback, read by constructDistanceMatrix() during solve().
     std::mutex mutex_guide_;
 
@@ -140,7 +142,7 @@ private:
     // Writes the cost-matrix problem file and initial tour, solves with LKH with and without the initial tour (logging both tour lengths), and returns the initialized run's tour.
     std::vector<int> LKHSolve();
     // Graph indices the next tour is solved over: START_ID plus every node within guide_radius_ of a guiding viewpoint, or all nodes if none
-    // are (or no guiding cloud has been received yet).
+    // are (or no guiding cloud has been received yet, or guiding is disabled via setGuidingEnabled()).
     std::vector<int> selectTourNodes();
 
 
@@ -160,6 +162,8 @@ public:
     void setStart(octomap::point3d position);
     // Sets the KD-tree of skeleton-derived guiding viewpoints used to bias the cost matrix toward them.
     void setKDtreeInput(pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewpoints);
+    // Enables/disables restricting the tour to guided nodes (selectTourNodes()); the guiding KD-tree itself is kept either way.
+    void setGuidingEnabled(bool enabled);
 
 
 };

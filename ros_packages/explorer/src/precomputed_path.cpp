@@ -104,6 +104,20 @@ namespace explorer
     committed_entry_.reset();
   }
 
+  // switches tsp_solver's guided tour node selection off (std_srvs/SetBool on ~set_tsp_guiding_out); true on success
+  bool Explorer::disableTspGuiding()
+  {
+    std_srvs::SetBool srv;
+    srv.request.data = false;
+    if (!sc_tsp_set_guiding_.call(srv) || !srv.response.success)
+    {
+      ROS_WARN_THROTTLE(1.0, "[MrsExplorer]: failed to disable tsp_solver guiding, retrying on the next replan");
+      return false;
+    }
+    ROS_INFO("[MrsExplorer]: tsp_solver guiding disabled");
+    return true;
+  }
+
   void Explorer::enterFollow(double entry_u, double progress_u, int dir)
   {
     ROS_INFO("[MrsExplorer]: precomputed mode -> FOLLOW (joined at u=%.2f, dir %+d)", progress_u, dir);
@@ -131,6 +145,11 @@ namespace explorer
   // Fills path_ and returns PRE_PATH on success; PRE_NONE -> frontier exploration (makePath()), or keep the current trajectory (advance_only)
   Explorer::PrecomputedResult_t Explorer::makePathPrecomputed(const octomap::point3d& start_coord, const octomath::Vector3& velocity, bool advance_only)
   {
+    if (precomputed_done_)
+    {
+      return PRE_NONE;
+    }
+
     std::vector<PrecomputedWaypoint_t> wps;
     std::string                        frame;
     {
@@ -143,7 +162,8 @@ namespace explorer
       }
       if (!precomputed_stable_ || precomputed_path_.size() < 2)
       {
-        precomputed_has_targets_ = false;
+        precomputed_all_known_since_ = ros::Time(0);
+        precomputed_has_targets_     = false;
         resetPrecomputedMode();
         return PRE_NONE;
       }
@@ -163,6 +183,31 @@ namespace explorer
 
     const std::vector<PathSample_t>    samples = resamplePath(wps);
     const std::vector<WaypointLabel_t> labels  = labelSamples(samples);
+
+    // completion: no UNKNOWN sample left on the (stable) path for precomputed/done_duration -> off for the rest of the run (makePath() then also
+    // switches tsp_solver's guiding off); measured across replans, any UNKNOWN sample restarts the clock
+    if (std::any_of(labels.begin(), labels.end(), [](WaypointLabel_t l) { return l == LABEL_UNKNOWN; }))
+    {
+      precomputed_all_known_since_ = ros::Time(0);
+    }
+    else
+    {
+      const ros::Time now = ros::Time::now();
+      if (precomputed_all_known_since_.isZero())
+      {
+        precomputed_all_known_since_ = now;
+      }
+      const double known_for = (now - precomputed_all_known_since_).toSec();
+      if (known_for >= _pre_done_duration_)
+      {
+        ROS_INFO("[MrsExplorer]: precomputed path fully known for %.1fs -> precomputed following off, frontier exploration only", known_for);
+        precomputed_done_        = true;
+        precomputed_has_targets_ = false;
+        resetPrecomputedMode();
+        return PRE_NONE;
+      }
+      ROS_INFO_THROTTLE(1.0, "[MrsExplorer]: precomputed path fully known for %.1f/%.1fs", known_for, _pre_done_duration_);
+    }
 
     // periodic replan: only extends the followed segment; anything else keeps the current trajectory (and the mode untouched)
     if (advance_only)

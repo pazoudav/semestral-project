@@ -18,6 +18,7 @@
 #include <mrs_msgs/TrajectoryReferenceSrv.h>
 #include <mrs_msgs/GetPathSrv.h>
 #include <std_srvs/Trigger.h>
+#include <std_srvs/SetBool.h>
 #include <std_msgs/Bool.h>
 
 #include <octomap/octomap.h>
@@ -87,6 +88,7 @@ namespace explorer
     double _replan_request_cooldown_;
     double _stuck_distance_;
     double _stuck_duration_;
+    double _goal_reached_tolerance_;
     double _latency_compensation_;
     double _latency_ema_alpha_;
     double latency_estimate_; // discounted average of measured replan latency, seeded with _latency_compensation_; see pathAndTrajectory()
@@ -110,6 +112,7 @@ namespace explorer
     double _pre_off_path_distance_;
     int    _pre_max_entry_attempts_;
     int    _pre_max_no_progress_;
+    double _pre_done_duration_;
     // flight zone from world_info.yaml (zone_x/zone_y/zone_z) + zone/global/floor, the same AABB path_planner samples roadmap nodes in;
     // precomputed path samples outside it are unreachable and skipped (LABEL_OUTSIDE)
     double               _flight_zone_width_x_;
@@ -216,6 +219,10 @@ namespace explorer
     std::atomic<bool>                  precomputed_has_targets_{false}; // last makePathPrecomputed() saw a usable entry; blocks end of exploration
     std::atomic<bool>                  following_precomputed_{false};   // the trajectory being flown came from makePathPrecomputed() (-> periodic advance replans)
     std::atomic<bool>                  advance_replan_{false};          // the replan in flight is a periodic advance replan (set by requestReplan(), read by makePath())
+    // precomputed path completion: stable path with no UNKNOWN sample for precomputed/done_duration -> precomputed following off for good
+    ros::Time                          precomputed_all_known_since_;    // zero = some sample was UNKNOWN (or the path unstable) at the last check
+    std::atomic<bool>                  precomputed_done_{false};        // set by makePathPrecomputed(); skips it from then on
+    bool                               tsp_guiding_disabled_ = false;   // tsp_solver's guiding was switched off (retried by makePath() until it succeeds)
 
     std::mutex                                mutex_octree_;
     std::shared_ptr<OcTree_t>                 octree_ = nullptr;
@@ -266,6 +273,7 @@ namespace explorer
     mrs_lib::ServiceClientHandler<tsp_solver::Solve>                sc_tsp_solve_;
     mrs_lib::ServiceClientHandler<path_planner::FindSimplifiedPath> sc_path_planner_find_simplified_path_;
     mrs_lib::ServiceClientHandler<std_srvs::Trigger>                sc_replan_request_;
+    mrs_lib::ServiceClientHandler<std_srvs::SetBool>                sc_tsp_set_guiding_;
     ros::Time                                                       last_replan_request_time_ = ros::Time(0);
 
     // stuck detection (checkStuck())
@@ -334,6 +342,7 @@ namespace explorer
                               const std::vector<PrecomputedWaypoint_t>& wps, const octomap::point3d& start_coord, bool advance_only);
     void           enterFollow(double entry_u, double progress_u, int dir);
     void           resetPrecomputedMode();
+    bool           disableTspGuiding();
     bool           occupiedOnlyChecks() const { return following_precomputed_ && pre_mode_ == PRE_MODE_FOLLOW; }
     static bool    occupiedNear(const OcTree_t& tree, const octomap::point3d& c, double r);
     std::vector<PathSample_t>    resamplePath(const std::vector<PrecomputedWaypoint_t>& wps) const;

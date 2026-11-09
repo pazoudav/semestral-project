@@ -67,8 +67,9 @@ namespace explorer
   }
 
   // returns true once the earlier of goal_ (first tour viewpoint) / next_goal_ (end of path_) is reached within 2x latency_estimate_ (plus one
-  // timer_rates/fast tick) along the MPC prediction, so the new trajectory takes over right at the goal; "reached" = the prediction sample closest
-  // to the goal over the full horizon (a goal beyond the horizon puts that at the last sample, i.e. not yet due)
+  // timer_rates/fast tick) along the MPC prediction, so the new trajectory takes over right at the goal; "reached" = the first prediction sample
+  // within planning/goal_reached_tolerance of the closest approach to the goal over the full horizon (a goal beyond the horizon puts that near
+  // the last sample, i.e. not yet due)
   bool Explorer::goalWithinLatency(const mrs_msgs::MpcPredictionFullState& prediction)
   {
     ros::WallTime t_start = ros::WallTime::now();
@@ -79,20 +80,25 @@ namespace explorer
       return false;
     }
 
-    // time from the prediction's first stamp to its sample closest to goal
+    // time from the prediction's first stamp to its first sample within planning/goal_reached_tolerance of its closest approach to goal
+    // (not the strict argmin: a prediction settling at / hovering around the goal keeps creeping marginally closer deep into the horizon,
+    // which would push the "arrival" there and never trigger the replan; the closest approach also covers goals the path stops short of)
     auto time_to_goal = [&](const octomap::point3d& goal) {
-      double min_dist = std::numeric_limits<double>::infinity();
-      double t_min    = 0.0;
+      std::vector<double> dists(n);
+      double              min_dist = std::numeric_limits<double>::infinity();
       for (std::size_t k = 0; k < n; k++)
       {
-        const double d = goal.distance(octomap::point3d(prediction.position[k].x, prediction.position[k].y, prediction.position[k].z));
-        if (d < min_dist)
+        dists[k] = goal.distance(octomap::point3d(prediction.position[k].x, prediction.position[k].y, prediction.position[k].z));
+        min_dist = std::min(min_dist, dists[k]);
+      }
+      for (std::size_t k = 0; k < n; k++)
+      {
+        if (dists[k] <= min_dist + _goal_reached_tolerance_)
         {
-          min_dist = d;
-          t_min    = (prediction.stamps[k] - prediction.stamps[0]).toSec();
+          return (prediction.stamps[k] - prediction.stamps[0]).toSec();
         }
       }
-      return t_min;
+      return 0.0;
     };
 
     const double t_goal  = std::min(time_to_goal(goal_), time_to_goal(next_goal_));

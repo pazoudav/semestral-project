@@ -27,6 +27,7 @@ namespace explorer
     param_loader.loadParam("planning/replan_request_cooldown",_replan_request_cooldown_);
     param_loader.loadParam("planning/stuck_distance",_stuck_distance_);
     param_loader.loadParam("planning/stuck_duration",_stuck_duration_);
+    param_loader.loadParam("planning/goal_reached_tolerance", _goal_reached_tolerance_);
     param_loader.loadParam("planning/latency_compensation",_latency_compensation_);
     param_loader.loadParam("planning/latency_ema_alpha",_latency_ema_alpha_);
 
@@ -51,6 +52,7 @@ namespace explorer
     param_loader.loadParam("precomputed/off_path_distance",  _pre_off_path_distance_);
     param_loader.loadParam("precomputed/max_entry_attempts", _pre_max_entry_attempts_);
     param_loader.loadParam("precomputed/max_no_progress",    _pre_max_no_progress_);
+    param_loader.loadParam("precomputed/done_duration",      _pre_done_duration_);
 
     // world_info.yaml (loaded by explorer.launch from the world_info_file_config arg)
     param_loader.loadParam("zone_x", _flight_zone_width_x_);
@@ -101,6 +103,7 @@ namespace explorer
     sc_tsp_solve_                 = mrs_lib::ServiceClientHandler<tsp_solver::Solve>(nh_, "solve_out");
     sc_path_planner_find_simplified_path_ = mrs_lib::ServiceClientHandler<path_planner::FindSimplifiedPath>(nh_, "find_simplified_path_out");
     sc_replan_request_            = mrs_lib::ServiceClientHandler<std_srvs::Trigger>(nh_, "replan_request_out");
+    sc_tsp_set_guiding_           = mrs_lib::ServiceClientHandler<std_srvs::SetBool>(nh_, "set_tsp_guiding_out");
 
     ss_replan_request_ = nh_.advertiseService("replan_request_in", &Explorer::callbackReplanRequest, this);
 

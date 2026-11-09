@@ -24,6 +24,7 @@ set(CATKIN_DEPENDENCIES
   message_generation
   message_runtime
   std_msgs
+  std_srvs
   geometry_msgs
   sensor_msgs
   pcl_ros

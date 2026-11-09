@@ -58,6 +58,11 @@ namespace explorer
 
     std::vector<octomap::point3d> glob_path;
     std::vector<unsigned long>    tour_ids;
+    // precomputed path done -> the tour is no longer restricted to its (skeleton-guided) viewpoints
+    if (precomputed_done_ && !tsp_guiding_disabled_)
+    {
+      tsp_guiding_disabled_ = disableTspGuiding();
+    }
     if (!solveTsp(velocity, glob_path, tour_ids))
     {
       ROS_ERROR("[MrsExplorer]: TSP solve failed");

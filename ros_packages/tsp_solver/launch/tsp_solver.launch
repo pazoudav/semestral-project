@@ -32,6 +32,7 @@
       <!-- services in -->
       <remap from="~set_start_in" to="~set_start" />
       <remap from="~solve_in" to="~solve" />
+      <remap from="~set_guiding_in" to="~set_guiding" />
 
       <!-- services out -->
       <remap from="~find_simplified_path_out" to="path_planner/find_simplified_path" />

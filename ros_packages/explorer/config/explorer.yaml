@@ -8,6 +8,7 @@ planning:
   stuck_duration: 2.0 # [s] time window over which stuck_distance of movement is required, otherwise force back to IDLE
   latency_compensation: 0.5 # [s] initial estimate of replan latency (state sampled -> trajectory published); replans start from the MPC-predicted position 2x this far ahead; 0 disables
   latency_ema_alpha: 0.3 # [-] weight of each new latency measurement in the discounted average (1 = only the last replan counts)
+  goal_reached_tolerance: 0.15 # [m] goalWithinLatency(): the goal counts as reached at the first MPC prediction sample within this of the prediction's closest approach to it
 
 local_refinement: # re-picks viewpoints of the nearest TSP tour clusters by DP over a layered DAG (Euclidean distances), see refineLocalTour()
   enabled: true
@@ -38,6 +39,7 @@ precomputed: # follows skeleton_estimator's precomputed coverage path where it e
   max_known_gap: 4.0      # [m] FOLLOW continues only while there is an UNKNOWN sample within this path length ahead; otherwise the next start is selected (GOTO)
   off_path_distance: 1.5  # [m] FOLLOW is abandoned when the UAV is farther than this from the path
   replan_period: 1.0      # [s] in FOLLOW, the trajectory is re-extended from the current position this often (kept if that fails)
+  done_duration: 10.0      # [s] stable path with no UNKNOWN sample for this long (checked on every replan) -> precomputed following and tsp_solver guiding are turned off for the rest of the run
 
 viz:
   scale:

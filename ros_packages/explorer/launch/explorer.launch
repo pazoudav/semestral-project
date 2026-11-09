@@ -49,6 +49,7 @@
       <remap from="~trajectory_reference_out" to="control_manager/trajectory_reference" />
       <remap from="~set_start_out" to="tsp_solver/set_start" />
       <remap from="~solve_out" to="tsp_solver/solve" />
+      <remap from="~set_tsp_guiding_out" to="tsp_solver/set_guiding" />
       <remap from="~find_simplified_path_out" to="path_planner/find_simplified_path" />
       <remap from="~replan_request_out" to="~replan_request" />
 

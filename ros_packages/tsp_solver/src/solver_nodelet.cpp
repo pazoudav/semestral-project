@@ -16,6 +16,7 @@
 #include <tsp_solver/tsp_solver.hpp>
 #include <tsp_solver/SetStart.h>
 #include <tsp_solver/Solve.h>
+#include <std_srvs/SetBool.h>
 
 #include <memory>
 
@@ -49,6 +50,7 @@ namespace tsp_solver
 
       ros::ServiceServer service_server_set_start_;
       ros::ServiceServer service_server_solve_;
+      ros::ServiceServer service_server_set_guiding_;
 
       void callbackFrontiers(const frontier_detector::FrontierArray::ConstPtr msg);
       void callbackCandidateViewpoints(const sensor_msgs::PointCloud2::ConstPtr msg);
@@ -57,6 +59,8 @@ namespace tsp_solver
                              tsp_solver::SetStart::Response& res);
       bool callbackSolve(tsp_solver::Solve::Request&  req,
                           tsp_solver::Solve::Response& res);
+      bool callbackSetGuiding(std_srvs::SetBool::Request&  req,
+                              std_srvs::SetBool::Response& res);
   };
 
 
@@ -99,6 +103,7 @@ namespace tsp_solver
 
     service_server_set_start_ = nh_.advertiseService("set_start_in", &Solver::callbackSetStart, this);
     service_server_solve_     = nh_.advertiseService("solve_in", &Solver::callbackSolve, this);
+    service_server_set_guiding_ = nh_.advertiseService("set_guiding_in", &Solver::callbackSetGuiding, this);
 
     is_initialized_ = true;
     ROS_INFO("[Solver]: initialized!");
@@ -130,6 +135,22 @@ namespace tsp_solver
     pcl::fromROSMsg(*msg, *cloud);
 
     tsp_solver_->setKDtreeInput(cloud);
+  }
+
+  // Service handler: enables (data=true) / disables (data=false) restricting the tour to skeleton-guided nodes, via TSPsolver::setGuidingEnabled.
+  bool Solver::callbackSetGuiding(std_srvs::SetBool::Request&  req,
+                                  std_srvs::SetBool::Response& res)
+  {
+    if (!is_initialized_) {
+      res.success = false;
+      res.message = "not initialized";
+      return true;
+    }
+
+    tsp_solver_->setGuidingEnabled(req.data);
+    res.success = true;
+    res.message = req.data ? "guiding enabled" : "guiding disabled";
+    return true;
   }
 
   // Service handler: sets/updates the TSP graph's start (current UAV position) node via TSPsolver::setStart.

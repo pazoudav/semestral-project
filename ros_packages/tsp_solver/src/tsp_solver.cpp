@@ -553,8 +553,8 @@ std::vector<int> TSPsolver::LKHSolve()
   return result;
 }
 
-// Index 0 (START_ID) is never tested and always included. Falls back to every node when no guiding cloud has been received yet or no node lies
-// within guide_radius_ of one. Must be called with mutex_dist_graph_ held (reads nodes_).
+// Index 0 (START_ID) is never tested and always included. Falls back to every node when guiding is disabled, no guiding cloud has been received
+// yet, or no node lies within guide_radius_ of one. Must be called with mutex_dist_graph_ held (reads nodes_).
 std::vector<int> TSPsolver::selectTourNodes()
 {
   const int n = static_cast<int>(nodes_.size());
@@ -562,7 +562,7 @@ std::vector<int> TSPsolver::selectTourNodes()
   std::iota(all.begin(), all.end(), 0);
 
   std::scoped_lock lock(mutex_guide_);
-  if (!pcset_)
+  if (!guiding_enabled_ || !pcset_)
     return all;
 
   // nearestKSearch returns squared distances
@@ -595,6 +595,15 @@ void TSPsolver::setKDtreeInput(pcl::PointCloud<pcl::PointXYZ>::Ptr guiding_viewp
   std::scoped_lock lock(mutex_guide_);
   tree_  = tree;
   pcset_ = true;
+}
+
+// Toggles guided node selection (selectTourNodes()); takes effect on the next solve().
+void TSPsolver::setGuidingEnabled(bool enabled)
+{
+  std::scoped_lock lock(mutex_guide_);
+  if (guiding_enabled_ != enabled)
+    ROS_INFO("[TSPsolver]: guiding viewpoint selection %s", enabled ? "enabled" : "disabled");
+  guiding_enabled_ = enabled;
 }
 
 }
