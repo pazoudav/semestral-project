@@ -17,6 +17,7 @@
 #include <tsp_solver/SetStart.h>
 #include <tsp_solver/Solve.h>
 #include <std_srvs/SetBool.h>
+#include <std_msgs/Bool.h>
 
 #include <memory>
 
@@ -51,6 +52,8 @@ namespace tsp_solver
       ros::ServiceServer service_server_set_start_;
       ros::ServiceServer service_server_solve_;
       ros::ServiceServer service_server_set_guiding_;
+      // latched current guiding state (true at start), republished on every ~set_guiding_in call
+      ros::Publisher pub_guiding_enabled_;
 
       void callbackFrontiers(const frontier_detector::FrontierArray::ConstPtr msg);
       void callbackCandidateViewpoints(const sensor_msgs::PointCloud2::ConstPtr msg);
@@ -105,6 +108,11 @@ namespace tsp_solver
     service_server_solve_     = nh_.advertiseService("solve_in", &Solver::callbackSolve, this);
     service_server_set_guiding_ = nh_.advertiseService("set_guiding_in", &Solver::callbackSetGuiding, this);
 
+    pub_guiding_enabled_ = nh_.advertise<std_msgs::Bool>("guiding_enabled_out", 1, true);
+    std_msgs::Bool guiding_msg;
+    guiding_msg.data = true;
+    pub_guiding_enabled_.publish(guiding_msg);
+
     is_initialized_ = true;
     ROS_INFO("[Solver]: initialized!");
   }
@@ -148,6 +156,9 @@ namespace tsp_solver
     }
 
     tsp_solver_->setGuidingEnabled(req.data);
+    std_msgs::Bool guiding_msg;
+    guiding_msg.data = req.data;
+    pub_guiding_enabled_.publish(guiding_msg);
     res.success = true;
     res.message = req.data ? "guiding enabled" : "guiding disabled";
     return true;

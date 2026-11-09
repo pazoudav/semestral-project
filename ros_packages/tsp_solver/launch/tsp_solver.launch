@@ -29,6 +29,9 @@
       <remap from="~frontiers_in" to="clustering/clusters" />
       <remap from="~candidate_viewpoints_in" to="skeleton_estimator/candidate_viewpoints" />
 
+      <!-- topics out -->
+      <remap from="~guiding_enabled_out" to="~guiding_enabled" />
+
       <!-- services in -->
       <remap from="~set_start_in" to="~set_start" />
       <remap from="~solve_in" to="~solve" />

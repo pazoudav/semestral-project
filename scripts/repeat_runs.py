@@ -6,7 +6,8 @@ Each run starts tmux/start.sh in the background (NO_ATTACH=1) and is watched by 
 /$UAV_NAME/explorer/exploration_finished. The whole simulation is then killed by scripts/kill_sim.sh and the next run starts.
 The watcher also follows /$UAV_NAME/skeleton_estimator/precomputed_path and appends to runs.log every time the published
 precomputed path becomes stable or loses stability (wall time since run start + sim time; on loss also which stability check
-failed, against the thresholds read from skeleton_estimator's precomputed/stability/* params).
+failed, against the thresholds read from skeleton_estimator's precomputed/stability/* params), and when tsp_solver's guiding
+viewpoint selection is switched off/on (latched /$UAV_NAME/tsp_solver/guiding_enabled).
 
 usage: scripts/repeat_runs.py [-n max_runs] [--max-run SECONDS] <world_name>
   e.g. scripts/repeat_runs.py -n 10 --max-run 3600 example
@@ -34,10 +35,11 @@ def log(msg):
     print("[%s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
 
 
-def watch(topic, max_run, path_topic, run, run_start, runs_log_path):
+def watch(topic, max_run, path_topic, guiding_topic, run, run_start, runs_log_path):
     """Child mode: block until `topic` carries true, or max_run seconds (wall time) pass.
 
-    Meanwhile appends a line to runs_log_path on every stability change of the precomputed path on `path_topic`."""
+    Meanwhile appends a line to runs_log_path on every stability change of the precomputed path on `path_topic` and on
+    every change of tsp_solver's guiding state on `guiding_topic`."""
     import rospy
     from std_msgs.msg import Bool
 
@@ -47,6 +49,22 @@ def watch(topic, max_run, path_topic, run, run_start, runs_log_path):
 
     finished = []
     rospy.Subscriber(topic, Bool, lambda msg: msg.data and finished.append(True), queue_size=1)
+
+    def log_event(event):
+        log(event)
+        with open(runs_log_path, "a") as f:
+            f.write("%s run %d: %s\n" % (time.strftime("%F %T"), run, event))
+
+    guiding = [True]  # tsp_solver starts with guiding enabled
+
+    def on_guiding(msg):
+        if msg.data == guiding[0]:
+            return
+        guiding[0] = msg.data
+        log_event("guiding viewpoints turned %s at %s (sim %.1fs)" % ("on" if msg.data else "off", fmt_duration(time.time() - run_start),
+                                                                     rospy.get_time()))
+
+    rospy.Subscriber(guiding_topic, Bool, on_guiding, queue_size=10)
 
     try:
         from skeleton_estimator.msg import PrecomputedPath
@@ -87,9 +105,7 @@ def watch(topic, max_run, path_topic, run, run_start, runs_log_path):
             else:
                 event = "path lost stability at %s (sim %.1fs), height %.2f m: %s" % (elapsed, msg.header.stamp.to_sec(), msg.height,
                                                                                      instability_reason(msg))
-            log(event)
-            with open(runs_log_path, "a") as f:
-                f.write("%s run %d: %s\n" % (time.strftime("%F %T"), run, event))
+            log_event(event)
 
         rospy.Subscriber(path_topic, PrecomputedPath, on_path, queue_size=10)
 
@@ -125,7 +141,8 @@ def main():
 
     if args.watch:
         path_topic = "/%s/skeleton_estimator/precomputed_path" % args.uav_name
-        sys.exit(watch(args.watch, args.max_run, path_topic, args.run, args.run_start, os.path.join(LOG_DIR, "runs.log")))
+        guiding_topic = "/%s/tsp_solver/guiding_enabled" % args.uav_name
+        sys.exit(watch(args.watch, args.max_run, path_topic, guiding_topic, args.run, args.run_start, os.path.join(LOG_DIR, "runs.log")))
 
     if not args.world_name:
         parser.error("world_name is required")

@@ -27,7 +27,7 @@ tour, which it then hands to `path_planner` in chunks to get a flyable path.
 |---|---|---|---|
 | `~set_start_in` | `~set_start` | `tsp_solver/SetStart` (`geometry_msgs/Point position` → `bool success`) | Sets/replaces the graph's start node (current UAV position). |
 | `~solve_in` | `~solve` | `tsp_solver/Solve` (`geometry_msgs/Vector3 velocity` → `geometry_msgs/Point[] path`, `uint32[] ids`, `bool success`, `string message`) | Solves the TSP for the given start velocity/heading and returns the ordered viewpoint tour; `ids` holds the frontier id of each path point (parallel to `path`, start node id 0). |
-| `~set_guiding_in` | `~set_guiding` | `std_srvs/SetBool` | `Solver::callbackSetGuiding` — enables (`data=true`, default) / disables guided tour node selection via `TSPsolver::setGuidingEnabled()`; when disabled, `selectTourNodes()` returns all nodes. Takes effect on the next solve. |
+| `~set_guiding_in` | `~set_guiding` | `std_srvs/SetBool` | `Solver::callbackSetGuiding` — enables (`data=true`, default) / disables guided tour node selection via `TSPsolver::setGuidingEnabled()`; when disabled, `selectTourNodes()` returns all nodes. Takes effect on the next solve. The new state is also published on `~guiding_enabled_out`. |
 
 `~set_start_in` and `~solve_in` are called back-to-back by `Explorer::makePath()` (in `explorer`, not
 part of this package) to obtain a fresh tour.
@@ -42,6 +42,7 @@ part of this package) to obtain a fresh tour.
 
 | Topic (private name) | Type | Purpose |
 |---|---|---|
+| `~guiding_enabled_out` (remapped to `~guiding_enabled`; latched) | `std_msgs/Bool` | Current guiding state: `true` at init, then `req.data` republished on every `~set_guiding_in` call. Consumed by `scripts/repeat_runs.py`, which logs guiding on/off changes to `runs.log`. |
 | `~timing/<scope>/<stage>` (e.g. `~timing/callbackSolve/total`) | `std_msgs/Float64` | Wall-clock timings in ms via `explorer_utils::TimingPublisher`. `Solver`: `callbackFrontiers/total`, `callbackSetStart/total`, `callbackSolve/{solve,build_resp,total}`. `TSPsolver`: `findPathDistances/{build_req,svc_call,parse_resp,total}`, `syncFrontiers/{incoming_ids,prune_removed,add_new,total}`, `setStart/{gather_ids,find_dists,update_map,total}`. |
 
 ## Important functions/classes
