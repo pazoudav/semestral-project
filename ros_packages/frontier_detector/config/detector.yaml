@@ -1,12 +1,12 @@
 zone:
   global:
-    floor:  -0.1       # keep numerically in sync with explorer/config/explorer.yaml zone.global.floor
+    floor:  -0.1       # keep numerically in sync with path_planner/config/path_planner.yaml and explorer/config/explorer.yaml zone.global.floor
   local:
-    width:  11.0         # keep numerically in sync with .../explorer.yaml zone.local.width
-    height: 9.0          # keep numerically in sync with .../explorer.yaml zone.local.height
+    width:  11.0         # local zone size (no longer mirrored in explorer.yaml)
+    height: 9.0
 
 prm:
-  free_space_diameter: 1.2   # keep numerically in sync with .../explorer.yaml prm.free_space_diameter
+  free_space_diameter: 1.2   # (explorer.yaml has no prm block; this value is read only by frontier_detector)
                               # (used here only for viewpoint free-space validation)
 
 frontiers:

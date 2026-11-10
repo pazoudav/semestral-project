@@ -48,5 +48,5 @@ viz:
 
 timer_rates:
   main: 10.0
-  path: 10.0
+  path: 10.0   # loaded but unused: the path timer no longer exists
   fast: 20.0

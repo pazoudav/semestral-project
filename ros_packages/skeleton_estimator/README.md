@@ -8,8 +8,8 @@ scanned structure (e.g. a wind turbine), aligns a prerecorded source skeleton to
 and maps an offline-precomputed coverage path into the live world. The precomputed
 path (`skeleton_estimator/precomputed_path`) is consumed by `explorer`
 (`~precomputed_path_in`), which follows it into unknown space once it is stable
-(`makePathPrecomputed()`); the transformed candidate viewpoints feed `tsp_solver`, whose
-callback currently ignores them. The algorithm is a **from-scratch port**, not a vendored copy, of
+(`makePathPrecomputed()`); the transformed candidate viewpoints feed `tsp_solver` as its
+*guiding* set (KD-tree; each tour is restricted to frontiers within `guide_radius` of them until `explorer` switches guiding off via `set_guiding`). The algorithm is a **from-scratch port**, not a vendored copy, of
 `predrecon::ROSA_main::pointCloudCallback` from the external
 [FC-Planner](https://github.com/HKUST-Aerial-Robotics/FC-Planner) repository
 (`~/user_ros_workspace/src/FC-Planner/src/rosa`, outside this workspace's `src/`),
@@ -44,7 +44,7 @@ remaps used at runtime.
 | `~skeleton_lines_out` | `~/extracted_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The ROSA skeleton edges — the main output. This node's own `~target_skeleton_in` loops back through it. |
 | `~skeleton_vertex_ids_out` | `~/skeleton_vertex_ids` | `visualization_msgs/MarkerArray` (TEXT_VIEW_FACING) | Debug: per-vertex ID text markers, reimplemented locally instead of depending on FC-Planner's `traj_utils::PlanningVisualization`. |
 | `~transformed_skeleton_out` | `~/transformed_skeleton` | `visualization_msgs/Marker` (LINE_LIST) | The source skeleton's line points, transformed by the RANSAC alignment `T` into the target/live frame. |
-| `~candidate_viewpoints_out` | `~/candidate_viewpoints` | `sensor_msgs/PointCloud2` (PointNormal: x y z normal_x normal_y normal_z curvature) | The source's candidate viewpoints, transformed by `T` into the live frame (normals rotated and renormalized), then shifted `alignment/viewpoint_offset` meters along their normals; only the shifted points are published — feeds `tsp_solver`'s `~candidate_viewpoints_in` (remapped to `skeleton_estimator/candidate_viewpoints`), though that callback currently returns immediately without consuming it. |
+| `~candidate_viewpoints_out` | `~/candidate_viewpoints` | `sensor_msgs/PointCloud2` (PointNormal: x y z normal_x normal_y normal_z curvature) | The source's candidate viewpoints, transformed by `T` into the live frame (normals rotated and renormalized), then shifted `alignment/viewpoint_offset` meters along their normals; only the shifted points are published — feeds `tsp_solver`'s `~candidate_viewpoints_in` (remapped to `skeleton_estimator/candidate_viewpoints`), which builds a KD-tree over them as the guiding set restricting tour node selection (`guide_radius`) until `explorer` disables guiding. |
 | `~precomputed_path_out` | `~/precomputed_path` | `skeleton_estimator/PrecomputedPath` (latched) | Per-alignment RANSAC estimate (`scale`, `yaw`, `translation`, `height`), stability fields (`stable`, `history_size`, `max_delta_{height,yaw,translation}`), informational `mean_residual` (`sqrt(cost/N)`, truncated RMS NN distance in world meters) and `observed_ratio`, and the selected path (`path_id`, `path_height`, `path_scale`, `applied_scale`, `waypoints[]` of `skeleton_estimator/Waypoint`: position, yaw, `is_viewpoint`). Check `stable` before using. Path fields are empty (`path_id` -1) when no path set is loaded. |
 | `~precomputed_path_vis_out` | `~/precomputed_path_vis` | `visualization_msgs/MarkerArray` (latched) | Path line strip (red = unstable, green = stable), a yaw arrow per viewpoint, and a status text. |
 | `~timing/targetSkeletonCallback/{load_target,candidates,ransac,viewpoints,skeleton,precomputed_path,total}` | same | `std_msgs/Float64` | Wall-clock time (ms) of each phase of `targetSkeletonCallback`, published via `explorer_utils::TimingPublisher`. |
@@ -99,7 +99,7 @@ remaps used at runtime.
   - `foldSymmetry(T, ref_yaw)` / `symmetryReferenceYaw()` (private) — with `symmetry_order_` k > 1, `foldSymmetry()` replaces `T` by `T * S_i` (S_i = yaw rotation by 2*pi*i/k about the vertical axis through `symmetry_center_`, the source skeleton's XY centroid cached in `sourceSkeletonCallback()`) so its yaw is the closest equivalent to `ref_yaw`; scale and z are preserved. `symmetryReferenceYaw()` returns the filtered yaw, else the best stored history hypothesis's yaw, else 0. `runRANSAC()` folds its best transform before storing it in the history (inverse recomputed), and `targetSkeletonCallback()` folds `T` before `smoothTransform()`, so symmetric flips don't disturb the blend/stability checks. No-op for k = 1.
   - `callbackOctomap()` — deserializes the global octomap into an immutable `FreeSpaceMap_t` snapshot (`octomap::OcTree` + KD-tree of occupied leaf centers) and swaps it in under `mutex_free_map_`.
   - `freeSpacePenalty()` (private) — fraction of transformed source skeleton points lying in known-free voxels with no occupied voxel within `free_margin_`, scaled by `weight * score_truncation^2 * |target|`. `runRANSAC()` adds it only when a hypothesis's alignment score alone beats the current best, and the history re-score includes it.
-  - `scoreAlignment()` (private) — scores a hypothesis for both RANSAC and history re-scoring: sum over target skeleton points of `min((scale * d_src)^2, score_truncation^2)` (NN distance to the transformed source, in world meters; `alignment/score_truncation`, default 2.0 m).
+  - `scoreAlignment()` (private) — scores a hypothesis for both RANSAC and history re-scoring: sum over target skeleton points of `min((scale * d_src)^2, score_truncation^2)` (NN distance to the transformed source, in world meters; `alignment/score_truncation`, 4.0 m in the shipped config).
 
 - **`Rosa`** (`include/skeleton_estimator/rosa.hpp` + `src/rosa.cpp`) — pure,
   non-ROS class implementing the ROSA algorithm (port of `predrecon::ROSA_main`),
@@ -146,7 +146,7 @@ skeleton_estimator/
 ├── msg/
 │   ├── Waypoint.msg                            # position, yaw, is_viewpoint
 │   └── PrecomputedPath.msg                     # estimate, stability, selected path waypoints
-├── data/<world_type>/                          # prerecorded skeleton/viewpoints .outmsg + paths/ (index.yaml, h<H>/{order,viewpoints}.txt)
+├── data/<world_type>/                          # (turbine, pylon) prerecorded skeleton/viewpoints .outmsg + paths/ (index.yaml with h_base and per-height entries, h<H>/{order,viewpoints}.txt plus FC-Planner logs)
 ├── config/
 │   └── skeleton_estimator.yaml                # ROSA algorithm parameters (radius, num_drosa, k_KNN, alpha, ...)
 ├── launch/

@@ -38,7 +38,7 @@ mrs_uav_managers:
         speed: 2.0
 
 
-    # rtk's default_constraints is "slow", which is the profile actually in effect at runtime
+    # default_constraints for rtk is "medium" (set above); "slow" below is unused
     # slow:
     #   vertical:
     #     ascending:

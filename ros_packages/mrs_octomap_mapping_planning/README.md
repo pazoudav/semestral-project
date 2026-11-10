@@ -6,18 +6,20 @@ This package has no C++/Python source of its own. It exists purely to wire toget
 
 ## What it launches
 
-The top-level launch file is [`launch/mapplan.launch`](launch/mapplan.launch). It takes `UAV_NAME`, `standalone`/`debug` flags, a `nodelet_manager_name` (default `$(arg UAV_NAME)_mapping_nodelet_manager`), a `world_frame_id`, and a set of `custom_config` args (mostly unused by the includes below other than `config_pcl_filter_*`/`config_octomap_server`/`config_octomap_visualizer`), then includes, in order:
+The top-level launch file is [`launch/mapplan.launch`](launch/mapplan.launch). It takes `UAV_NAME`, `standalone`/`debug` flags, a `nodelet_manager_name` (default `$(arg UAV_NAME)_mapping_nodelet_manager`), a `world_frame_id`, and a set of `custom_config` args (only `config_pcl_filter_ouster`, `config_octomap_server` and `config_octomap_visualizer` are used by active includes; `config_octomap_planner` only by the commented-out explorer include), then includes, in order:
 
-1. **Nodelet manager** — [`launch/nodelet_manager.launch`](launch/nodelet_manager.launch), started under `ns="$(arg UAV_NAME)"`. When `standalone` is false it starts a `nodelet manager` node named `$(arg nodelet_manager_name)` (`num_worker_threads` = `n_threads`, default 16) that the other includes load their nodelets into; when `standalone` is true this group is skipped and each nodelet runs as its own standalone node instead.
+1. **Nodelet manager** — [`launch/nodelet_manager.launch`](launch/nodelet_manager.launch), started under `ns="$(arg UAV_NAME)"`. When neither `standalone` nor `debug` is set it starts a `nodelet manager` node named `$(arg nodelet_manager_name)` (`num_worker_threads` = `n_threads`, default 16, `required="true"` so a manager crash makes roslaunch exit and lets the tmux restart loop relaunch the stack) that the other includes load their nodelets into; when `standalone` or `debug` is true this group is skipped and each nodelet runs as its own standalone node instead.
 
 2. **Ouster point cloud filter** — `mrs_pcl_tools`'s `launch/pcl_filter.launch`, `name_suffix="ouster"`, remapping `topic_3d_lidar_in` from `os_cloud_nodelet/points`, configured via `config_pcl_filter_ouster`.
 
-3. **Octomap server** — `mrs_octomap_server`'s `launch/octomap.launch`, configured via `config_octomap_server`. Its inputs are `pcl_filter_ouster/points_processed` (lidar 3D slot 0, plus its `points_over_max_range`), `pcl_filter_rs_front/points_processed` (depth camera slot 0), `pcl_filter_rs_down/points_processed` (depth camera slot 1), each paired with its `*_over_max_range` and the matching `camera_info` topic (`front_rgbd/aligned_depth_to_color/camera_info`, `down_rgbd/aligned_depth_to_color/camera_info`), plus a 2D lidar input from `rplidar/scan`. `world_frame_id` is passed through from the top-level arg. Only the Ouster filter is launched by this file; the `pcl_filter_rs_front`/`pcl_filter_rs_down` topics must come from filters started elsewhere (the `config_pcl_filter_rs_front`/`config_pcl_filter_rs_down` args are declared but not used by any include).
+3. **Octomap server** — `mrs_octomap_server`'s `launch/octomap.launch`, configured via `config_octomap_server`. Its inputs are `pcl_filter_ouster/points_processed` (lidar 3D slot 0, plus `pcl_filter_ouster/points_over_max_range`), `pcl_filter_rs_front/points_processed` (depth camera slot 0), `pcl_filter_rs_down/points_processed` (depth camera slot 1), each paired with its `*_over_max_range` and the matching `camera_info` topic (`front_rgbd/aligned_depth_to_color/camera_info`, `down_rgbd/aligned_depth_to_color/camera_info`), plus a 2D lidar input from `rplidar/scan`. `world_frame_id` is passed through from the top-level arg. Only the Ouster filter is launched by this file; the `pcl_filter_rs_front`/`pcl_filter_rs_down` topics must come from filters started elsewhere (the `config_pcl_filter_rs_front`/`config_pcl_filter_rs_down` args are declared but not used by any include).
 
 4. **Octomap RViz visualizers** — two instances of `mrs_octomap_tools`'s `launch/octomap_rviz_visualizer.launch`, configured via `config_octomap_visualizer`: `node_name="octomap_global_vis"` visualizing `octomap_server/octomap_global_binary`, and `node_name="octomap_local_vis"` visualizing `octomap_server/octomap_local_binary`.
 
 **Commented out:** four includes are present in `mapplan.launch` but disabled, each wrapped in an XML comment —
-`frontier_detector`'s `launch/detector.launch`, `prm_solver`'s `launch/prm_solver.launch`, `tsp_solver`'s `launch/tsp_solver.launch` (all `standalone="true"`, `debug="false"`), and `explorer`'s `launch/explorer.launch` (`standalone="true"`, `nodelet_manager_name`, `custom_config` = `config_octomap_planner`, `debug="false"`). In the actual running system these nodelets are instead started directly from `tmux/session.yml` at the workspace root (outside this package), not from `mapplan.launch`. The `prm_solver` block is stale: that package no longer exists in this project. `path_planner` and `skeleton_estimator` have no include here at all — they too are started from `tmux/session.yml`.
+`frontier_detector`'s `launch/detector.launch`, `prm_solver`'s `launch/prm_solver.launch`, `tsp_solver`'s `launch/tsp_solver.launch` (all `standalone="true"`, `debug="false"`), and `explorer`'s `launch/explorer.launch` (`standalone="true"`, `nodelet_manager_name`, `custom_config` = `config_octomap_planner`, `debug="false"`). `explorer` is therefore not launched from here either; these nodelets are instead started from `tmux/session.yml` at the workspace root (outside this package). The `prm_solver` block is stale: that package no longer exists in this project. `path_planner`, `clustering` and `skeleton_estimator` have no include here at all — they too are started from `tmux/session.yml`.
+
+**Resulting octomap topics** (under the `$(arg UAV_NAME)` namespace of the octomap server): `octomap_server/octomap_global_binary` and `octomap_server/octomap_local_binary` are the ones this launch file references; the `octomap_global_vis`/`octomap_local_vis` visualizers consume them for RViz.
 
 `mapplan.launch` is the only top-level launch file in this package. [`launch/nodelet_manager.launch`](launch/nodelet_manager.launch) is a helper included by it (described above).
 
@@ -26,7 +28,7 @@ The top-level launch file is [`launch/mapplan.launch`](launch/mapplan.launch). I
 ```
 mrs_octomap_mapping_planning/
 ├── .gitman.yml                  # gitman manifest: external MRS repos to fetch into ros_packages/ siblings
-├── CMakeLists.txt               # catkin_package() only; installs launch/ and tmux/ (tmux/ dir not present in this package)
+├── CMakeLists.txt               # catkin_package() only; installs launch/ and tmux/ (no tmux/ dir exists in this package, so that install rule is dangling)
 ├── package.xml                  # catkin package manifest and declared dependencies
 └── launch/
     ├── mapplan.launch           # main integration launch file, see "What it launches" above
@@ -44,7 +46,8 @@ There is no `config/` directory in this package; all config overrides used by th
 - `mrs_octomap_server`
 - `mrs_octomap_tools`
 - `mrs_subt_planning_lib`
-- `mrs_octomap_planner` (the upstream CTU-MRS package) is listed in `package.xml` but commented out — this project's own planner, the local `explorer` package (a sibling under `ros_packages/`, formerly a fork named `mrs_octomap_planner`), is built locally in this workspace instead.
+- `mrs_octomap_planner` (the upstream CTU-MRS package) is listed in `package.xml` but commented out — this project's own planner, the local `explorer` package (a sibling under `ros_packages/`), is built locally in this workspace instead.
+- `mapplan.launch` additionally `$(find)`s `mrs_pcl_tools` (not declared in `package.xml`) and `nodelet_manager.launch` uses `mrs_uav_general` (logger config, also undeclared); both come from the MRS UAV stack.
 
 **gitman-managed external MRS repos** (from [`.gitman.yml`](.gitman.yml), fetched via `gitman`, not vendored under this repo's `src/`):
 - `mrs_octomap_tools` — https://github.com/ctu-mrs/octomap_tools.git

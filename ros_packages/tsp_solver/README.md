@@ -19,7 +19,7 @@ tour, which it then hands to `path_planner` in chunks to get a flyable path.
 | Topic (private name) | Remap (launch) | Type | Purpose |
 |---|---|---|---|
 | `~frontiers_in` | `clustering/clusters` | `frontier_detector/FrontierArray` | Keeps the internal distance graph (`TSPsolver::nodes_`/`distances_`/`id_to_index_`) in sync via `syncFrontiers()`. Fed by the `clustering` nodelet (one frontier per cluster), not the raw `frontier_detector/frontiers` feed; the raw remap is left commented out in `tsp_solver.launch`. |
-| `~candidate_viewpoints_in` | `skeleton_estimator/candidate_viewpoints` | `sensor_msgs/PointCloud2` | `Solver::callbackCandidateViewpoints` converts the cloud to `pcl::PointCloud<pcl::PointXYZ>` and passes it to `TSPsolver::setKDtreeInput()` as the skeleton-derived guiding viewpoints (see `selectTourNodes`). |
+| `~candidate_viewpoints_in` | `skeleton_estimator/candidate_viewpoints` | `sensor_msgs/PointCloud2` | `Solver::callbackCandidateViewpoints` converts the cloud to `pcl::PointCloud<pcl::PointXYZ>` and passes it to `TSPsolver::setKDtreeInput()` as the skeleton-derived guiding viewpoints (see `selectTourNodes`). Produced by `skeleton_estimator`. |
 
 ### Services advertised (server)
 
@@ -27,7 +27,7 @@ tour, which it then hands to `path_planner` in chunks to get a flyable path.
 |---|---|---|---|
 | `~set_start_in` | `~set_start` | `tsp_solver/SetStart` (`geometry_msgs/Point position` → `bool success`) | Sets/replaces the graph's start node (current UAV position). |
 | `~solve_in` | `~solve` | `tsp_solver/Solve` (`geometry_msgs/Vector3 velocity` → `geometry_msgs/Point[] path`, `uint32[] ids`, `bool success`, `string message`) | Solves the TSP for the given start velocity/heading and returns the ordered viewpoint tour; `ids` holds the frontier id of each path point (parallel to `path`, start node id 0). |
-| `~set_guiding_in` | `~set_guiding` | `std_srvs/SetBool` | `Solver::callbackSetGuiding` — enables (`data=true`, default) / disables guided tour node selection via `TSPsolver::setGuidingEnabled()`; when disabled, `selectTourNodes()` returns all nodes. Takes effect on the next solve. The new state is also published on `~guiding_enabled_out`. |
+| `~set_guiding_in` | `~set_guiding` | `std_srvs/SetBool` | `Solver::callbackSetGuiding` — enables (`data=true`, default) / disables guided tour node selection via `TSPsolver::setGuidingEnabled()`; when disabled, `selectTourNodes()` returns all nodes. Takes effect on the next solve. The new state is also published on `~guiding_enabled_out`. Called by `explorer` (`disableTspGuiding()`, `data=false`, once the precomputed path is done). |
 
 `~set_start_in` and `~solve_in` are called back-to-back by `Explorer::makePath()` (in `explorer`, not
 part of this package) to obtain a fresh tour.
@@ -56,7 +56,7 @@ part of this package) to obtain a fresh tour.
 - **`selectTourNodes`** — picks the graph indices the next tour is solved over: `START_ID` (always index 0) plus every node within `guide_radius` of a guiding viewpoint. Falls back to all nodes when guiding is disabled (`setGuidingEnabled(false)`, flag `guiding_enabled_` guarded by `mutex_guide_`), no guiding cloud has been received yet, or no node is guided, so unguided frontiers are only toured once no guided ones remain.
 - **`constructDistanceMatrix`** — flattens the current `distances_`/`nodes_` into the dense `cost_matrix_`/`viewpoint_positions_`/`isAccesible_` fed to `LKHSolve()` restricted to the `selectTourNodes()` subset (row/column 0 stays `START_ID`), then adds a start-heading penalty (`dir_weight`) to the start row. Must be called with `mutex_dist_graph_` held.
 - **`solve(octomath::Vector3 velocity, std::vector<unsigned long>& ids)`** — main entry point used by the nodelet: snapshots the distance graph (`constructDistanceMatrix()`, briefly under `mutex_dist_graph_`) and calls `LKHSolve()`, then maps the returned tour indices back to viewpoint positions and fills `ids` with the matching node ids (from the snapshotted `node_ids_`), discarding (returning an empty tour) if any index is out of range for the current viewpoint count.
-- **LKH invocation (`GlobalParWrite` / `GlobalProblemWrite` / `LKHSolve` / `GlobalResultsRead`)** — `GlobalParWrite()` writes the LKH `.par` control file once, from the `TSPsolver` constructor (its contents are fixed for the process lifetime). Each `LKHSolve()` call writes the current cost matrix out as an explicit-weight ATSP problem file (`cost_matrix.txt`), removes any previous `solution.txt`, shells out via `std::system()` to the bundled `LKH/LKH` binary, and — only if that call exits successfully — parses the fresh `solution.txt`'s `TOUR_SECTION` back into a 0-based node index tour; a nonzero exit code is logged and returns an empty tour rather than risking a stale/mismatched `solution.txt` being parsed. Paths are resolved relative to `ros::package::getPath("tsp_solver")`.
+- **LKH invocation (`GlobalParWrite` / `GlobalProblemWrite` / `LKHSolve` / `GlobalResultsRead`)** — `GlobalParWrite()` writes the LKH `.par` control files once, from the `TSPsolver` constructor (`params.txt` with `INITIAL_TOUR_FILE`, and `params_no_init.txt` without; the latter is only used by a commented-out comparison run in `LKHSolve()`). Each `LKHSolve()` call returns the trivial tour directly when there are at most 2 nodes; otherwise it writes the current cost matrix as an explicit-weight ATSP problem file (`cost_matrix.txt`), writes the seed tour from `buildInitialTour()` (previous tour's tail kept while its nodes still exist, greedy nearest-neighbor front half) to `initial_tour.txt`, and calls `runLKH()`, which removes any previous `solution.txt`, shells out via `std::system()` to the bundled `LKH/LKH` binary, and — only if that call exits successfully — parses the fresh `solution.txt`'s `TOUR_SECTION` back into a 0-based node index tour; a nonzero exit code is logged and returns an empty tour rather than risking a stale/mismatched `solution.txt` being parsed. Paths are resolved relative to `ros::package::getPath("tsp_solver")`.
 
 ### Concurrency
 
@@ -71,7 +71,7 @@ tsp_solver/
 ├── nodelets.xml                # pluginlib export: tsp_solver/Solver -> tsp_solver::Solver
 ├── README.md                   # this file
 ├── config/
-│   └── tsp_solver.yaml         # runtime-tunable params (tsp/max_duration, lkh_time_limit, lkh_runs, dir_weight, guide_radius; vp_weight is loaded but unused)
+│   └── tsp_solver.yaml         # runtime-tunable params (tsp/max_duration, lkh_time_limit, lkh_runs, dir_weight, guide_radius; vp_weight is loaded but unused (its use is commented out))
 ├── launch/
 │   └── tsp_solver.launch       # standalone/nodelet-manager launch, topic/service remaps
 ├── srv/

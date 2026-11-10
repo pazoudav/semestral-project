@@ -41,6 +41,7 @@ Both visualizers are shown in the RViz layout (`tmux/rviz.rviz`).
 
 | Parameter | Meaning |
 |---|---|
+| `uav_name` | Set by `clustering.launch` from `UAV_NAME` (not in the yaml); default tf prefix of the `mrs_lib::Transformer`. |
 | `tree/growth_factor` | Every radius of a node is scaled by `growth_factor^scale`, where `scale` is the node's integer step count. |
 | `tree/expand_radius` | A root child increases its `scale` while the UAV is farther than this (scaled). |
 | `tree/deflate_radius` | …and decreases it while the UAV is closer than this. Keep `<= expand_radius / growth_factor`, otherwise grow/shrink alternate every frame. |

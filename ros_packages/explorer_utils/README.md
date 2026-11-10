@@ -3,8 +3,8 @@
 ## Purpose
 
 This package is the shared geometry/octomap helper library for the energy-aware UAV coverage
-path planning system. Several independent nodelets in this workspace — `explorer`
-(the `Explorer`) and `frontier_detector` — need the same low-level building blocks: axis-aligned
+path planning system. Several independent nodelets in this workspace — `explorer`,
+`frontier_detector`, `path_planner`, `clustering`, `tsp_solver`, and `skeleton_estimator` — need the same low-level building blocks: axis-aligned
 bounding box (AABB) math, octomap voxel-neighbor lookups, free-space checks against a live
 `octomap::OcTree`, random sampling within a region, and a helper to read the UAV's current
 position (transformed into the octree frame). Rather than duplicating that logic in each nodelet,
@@ -23,7 +23,7 @@ helper (`timing.hpp`), which publishes in the *caller's* namespace:
 |-------|------|-----------|-------------|
 | `<nodehandle ns>/timing/<name>` | `std_msgs/Float64` | published | timing measurement in ms; one topic per `<name>`, advertised lazily on first use (queue size 10) |
 
-Consuming packages (`explorer`, `frontier_detector`) own all other ROS communication.
+Consuming packages own all other ROS communication.
 
 ## Important functions/types
 
@@ -74,7 +74,7 @@ Functions:
   the known-free leaves' clipped volume against the zone's volume, rather than descending the tree
   per fine voxel. The sphere variant still does a per-voxel spherical scan (unchanged) since it sits
   on `explorer`'s 20Hz collision-check hot path.
-- `getRand()` / `getRand(a,b)` / `getSampleFromAABB` — uniform random sampling helpers; `getRand()`
+- `getRand()` / `getRand(float a, float b)` / `getRand(int a, int b)` / `getSampleFromAABB` — uniform random sampling helpers; `getRand()`
   draws from a thread-local, `std::random_device`-seeded `std::mt19937` (rather than libc `rand()`).
 - `getPosition(...)` — reads the UAV's current commanded position (from `mrs_msgs::TrackerCommand`
   via a caller-owned `SubscribeHandler`) and transforms it into the octree frame; assumes the
@@ -83,10 +83,13 @@ Functions:
   (`mrs_msgs::TrackerCommand::full_state_prediction`, via the same two caller-owned
   `SubscribeHandler`s as `getPosition`) and returns it once both the control-manager diagnostics
   and tracker command are fresh (<2s old) and a transform from the prediction's frame into
-  `octree_frame` exists; assumes the octree mutex is already held by the caller. Note it only
-  checks that `transformer.getTransform(...)` succeeds — it does not apply that transform to the
-  returned prediction, so the returned message is still expressed in its original `header.frame_id`
-  rather than `octree_frame`.
+  `octree_frame` exists; transforms every predicted position and velocity into `octree_frame`
+  (setting `header.frame_id` accordingly); assumes the octree mutex is already held by the caller.
+- `mergeInto(from, to)` — overlays every leaf of one `octomap::OcTree` onto another (same
+  resolution), overwriting values at the corresponding voxels; used to merge a local octomap into a
+  persistent one.
+- `pointToOctomap` / `octomapToPoint` — convert between `geometry_msgs::Point` and
+  `octomap::point3d`.
 
 ## File structure
 

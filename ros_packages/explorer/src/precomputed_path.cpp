@@ -368,7 +368,7 @@ namespace explorer
   // FOLLOW: re-locates the UAV on the path near the last progress (nearest sample in a window around it; farther than
   // precomputed/off_path_distance = lost the path -> done), then walks the segment ahead in pre_dir_ until a sample is blocked (outside
   // flight_zone_, or an occupied voxel within precomputed/follow_clearance; unknown is fine) or the path ends. The samples within
-  // precomputed/follow_horizon become path_ (with FC-Planner headings); the segment is done when there is no UNKNOWN sample on it within
+  // precomputed/follow_horizon become path_ (with FC-Planner headings, currently unused by makeTrajectory); the segment is done when there is no UNKNOWN sample on it within
   // precomputed/max_known_gap. advance_only: never changes the following state besides the progress
   Explorer::FollowResult_t Explorer::planFollow(const std::vector<PathSample_t>& samples, const std::vector<WaypointLabel_t>& labels,
                                                  const std::vector<PrecomputedWaypoint_t>& wps, const octomap::point3d& start_coord, bool advance_only)
